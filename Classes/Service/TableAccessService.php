@@ -423,6 +423,7 @@ class TableAccessService implements SingletonInterface
             // Allow some safe root-level tables
             $allowedRootTables = [
                 'sys_file_storage', // File storage configuration
+                'sys_file_reference', // FAL reference table - needed for file operations
                 'sys_domain', // Domain configuration
                 'sys_category', // Category system - safe for read operations
             ];
@@ -447,7 +448,6 @@ class TableAccessService implements SingletonInterface
             'cache_hash', // Cache tables - managed by system
             'sys_be_shortcuts', // User shortcuts - user-specific
             'sys_news', // System news - admin-only
-            'sys_file_reference', // FAL reference table - file handling not supported yet
         ];
         
         if (in_array($table, $restrictedTables)) {

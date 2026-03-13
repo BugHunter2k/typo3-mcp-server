@@ -55,13 +55,13 @@ class TableAccessServiceFieldAccessTest extends FunctionalTestCase
     }
 
     /**
-     * Test that sys_file_reference table is not accessible
+     * Test that sys_file_reference table is accessible (needed for FAL operations)
      */
-    public function testSysFileReferenceTableIsRestricted(): void
+    public function testSysFileReferenceTableIsAccessible(): void
     {
         $canAccess = $this->service->canAccessTable('sys_file_reference');
 
-        $this->assertFalse($canAccess, 'sys_file_reference table should be restricted');
+        $this->assertTrue($canAccess, 'sys_file_reference table should be accessible for FAL operations');
     }
 
     /**
