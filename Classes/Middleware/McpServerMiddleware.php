@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Hn\McpServer\Middleware;
 
 use Hn\McpServer\Http\CorsHeadersTrait;
+use Hn\McpServer\Http\FileUploadEndpoint;
 use Hn\McpServer\Http\McpEndpoint;
 use Hn\McpServer\Http\OAuthAuthorizeEndpoint;
 use Hn\McpServer\Http\OAuthTokenEndpoint;
@@ -41,6 +42,9 @@ class McpServerMiddleware implements MiddlewareInterface
         return match($path) {
             // Main MCP endpoint
             '/mcp' => GeneralUtility::makeInstance(McpEndpoint::class)($request),
+
+            // File upload endpoint (multipart/form-data)
+            '/mcp/upload' => GeneralUtility::makeInstance(FileUploadEndpoint::class)($request),
             
             // OAuth endpoints
             '/mcp_oauth/authorize' => GeneralUtility::makeInstance(OAuthAuthorizeEndpoint::class)($request),
