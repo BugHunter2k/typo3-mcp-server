@@ -113,11 +113,14 @@ class InlineRelationWriteTest extends FunctionalTestCase
     }
 
     /**
-     * Test writing inline relations for hidden tables (sys_file_reference)
+     * Test writing file references via file field type
      */
-    public function testWriteHiddenTableInlineRelation(): void
+    public function testWriteFileReferencesViaFileField(): void
     {
-        $this->markTestSkipped('sys_file_reference is intentionally restricted due to workspace limitations');
+        // File field support is now enabled — sys_file_reference is accessible
+        $service = GeneralUtility::makeInstance(\Hn\McpServer\Service\TableAccessService::class);
+        $canAccess = $service->canAccessField('pages', 'media');
+        $this->assertTrue($canAccess, 'File fields should be accessible now');
     }
 
     /**

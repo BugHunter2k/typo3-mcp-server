@@ -599,10 +599,15 @@ class TableAccessService implements SingletonInterface
     {
         $fieldConfig = $GLOBALS['TCA'][$table]['columns'][$fieldName] ?? [];
 
-        // Block file fields - file handling not supported yet
         $fieldType = $fieldConfig['config']['type'] ?? '';
+
+        // Treat file fields like inline relations (both use sys_file_reference)
         if ($fieldType === 'file') {
-            return false;
+            $foreignTable = $fieldConfig['config']['foreign_table'] ?? 'sys_file_reference';
+            if (!$this->canAccessTable($foreignTable)) {
+                return false;
+            }
+            return true;
         }
 
         // Block inline relations where foreign table isn't writable
