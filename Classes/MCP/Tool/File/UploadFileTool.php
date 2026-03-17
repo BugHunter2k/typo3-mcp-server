@@ -23,7 +23,9 @@ class UploadFileTool extends AbstractRecordTool
     public function getSchema(): array
     {
         return [
-            'description' => 'Upload a file to a TYPO3 file storage. File data must be Base64-encoded. Returns the created file\'s UID, name, size, and public URL.',
+            'description' => 'Upload a file to TYPO3 FAL via Base64-encoded data. '
+                . 'For files accessible via URL, prefer ImportFileFromUrl which avoids encoding overhead entirely. '
+                . 'For local files > 2MB, use GetUploadCredentials + curl for direct HTTP upload without Base64 overhead.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [

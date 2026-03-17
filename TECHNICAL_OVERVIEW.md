@@ -122,6 +122,15 @@ The MCP Server provides these tools for interacting with TYPO3:
 ### Content Modification
 - **WriteTable** - Create, update, or delete records (safely in workspace)
 
+### File Management
+- **ListStorages** - List available file storages
+- **BrowseFolder** - Browse folder contents (subfolders and files)
+- **SearchFile** - Search for files with thumbnail previews
+- **PreviewFile** - Generate file preview thumbnails
+- **UploadFile** - Upload files via Base64 (for small files < 2MB)
+- **ImportFileFromUrl** - Import files from a public URL
+- **GetUploadCredentials** - Generate one-time upload token for large files via direct HTTP upload
+
 > Each tool provides detailed schema information when called. See the Real-World Scenarios below for practical examples.
 
 ## Real-World Scenarios
@@ -271,6 +280,32 @@ Example:
 // Use: "sys_language_uid": "de"
 ```
 
+### Large File Uploads (Pre-Signed URL Pattern)
+
+For files larger than ~2MB, the Base64 encoding over MCP JSON-RPC becomes impractical. The MCP Server provides a pre-signed URL pattern (similar to AWS S3) for direct HTTP uploads:
+
+```
+1. AI calls GetUploadCredentials(folder, filename)
+   → Server generates one-time token, returns URL + token
+
+2. AI runs curl in Bash:
+   curl -X POST 'https://example.com/mcp/upload' \
+     -H 'Authorization: Bearer <token>' \
+     -F 'file=@/path/to/local/file.jpg'
+   → File uploaded directly via HTTP, no Base64
+
+3. Server validates token, uploads to FAL
+   → Returns { uid, name, size, mimeType, path, url }
+```
+
+**Security model:**
+- One-time tokens stored as SHA-256 hash in database
+- Tokens expire after 5 minutes
+- Target folder and filename locked at token creation time
+- BE user permissions re-validated at upload time
+- File extension allowlist + MIME type validation
+- SVG sanitization for SVG uploads
+
 ### Workspace Magic
 
 Behind the scenes, the workspace system:
@@ -314,10 +349,9 @@ The MCP Server respects all TYPO3 permissions:
 
 While the MCP Server is powerful, some features are still in development:
 
-### Image/File Handling
-- Currently read-only access to file references
-- Cannot upload new files or modify existing ones
-- Workaround: Reference existing files by ID
+### File References
+- Cannot create `sys_file_reference` records via MCP (use WriteTable as workaround)
+- File metadata updates (alt text, title) require direct table writes
 
 ### Direct Workspace Management
 - Cannot create/delete workspaces
