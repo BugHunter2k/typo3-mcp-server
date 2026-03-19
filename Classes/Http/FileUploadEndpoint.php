@@ -10,6 +10,7 @@ use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\UploadedFileInterface;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
 use TYPO3\CMS\Core\Context\Context;
+use TYPO3\CMS\Core\Context\FileProcessingAspect;
 use TYPO3\CMS\Core\Context\UserAspect;
 use TYPO3\CMS\Core\Context\WorkspaceAspect;
 use TYPO3\CMS\Core\Database\ConnectionPool;
@@ -17,6 +18,8 @@ use TYPO3\CMS\Core\Http\Response;
 use TYPO3\CMS\Core\Http\Stream;
 use TYPO3\CMS\Core\Localization\LanguageServiceFactory;
 use TYPO3\CMS\Core\Resource\Enum\DuplicationBehavior;
+use TYPO3\CMS\Core\Resource\Index\Indexer;
+use TYPO3\CMS\Core\Resource\ProcessedFile;
 use TYPO3\CMS\Core\Resource\ResourceFactory;
 use TYPO3\CMS\Core\Resource\Security\SvgSanitizer;
 use TYPO3\CMS\Core\Core\SystemEnvironmentBuilder;
@@ -76,6 +79,12 @@ class FileUploadEndpoint
 
         // Set global request for TYPO3 internal services that expect it
         $GLOBALS['TYPO3_REQUEST'] = $request;
+
+        // Disable deferred image processing — DeferredBackendImageProcessor requires a full
+        // backend session with CSRF tokens, which this endpoint doesn't have (Bearer token only).
+        // Setting deferProcessing=false routes image processing through LocalImageProcessor instead.
+        $context = GeneralUtility::makeInstance(Context::class);
+        $context->setAspect('fileProcessing', new FileProcessingAspect(false));
 
         $folder = (string)$tokenData['folder'];
         $filename = (string)$tokenData['filename'];
@@ -179,6 +188,20 @@ class FileUploadEndpoint
             if (file_exists($tempPath)) {
                 @unlink($tempPath);
             }
+        }
+
+        // Extract metadata (width/height) and generate preview — non-critical enrichment.
+        // Must run AFTER the try/finally: the file is already in FAL, so extractor failures
+        // must not abort the upload response.
+        try {
+            $indexer = GeneralUtility::makeInstance(Indexer::class, $storage);
+            $indexer->extractMetaData($file);
+
+            if (str_starts_with($file->getMimeType(), 'image/')) {
+                $file->process(ProcessedFile::CONTEXT_IMAGEPREVIEW, []);
+            }
+        } catch (\Exception) {
+            // Metadata extraction and preview generation are non-critical
         }
 
         // Build success response

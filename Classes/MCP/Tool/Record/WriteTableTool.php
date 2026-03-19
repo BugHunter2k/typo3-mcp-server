@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Hn\McpServer\MCP\Tool\Record;
 
 use Doctrine\DBAL\ParameterType;
+use Hn\McpServer\Event\AfterRecordWriteEvent;
+use Hn\McpServer\Event\BeforeRecordWriteEvent;
 use Hn\McpServer\Exception\DatabaseException;
 use Hn\McpServer\Exception\ValidationException;
 use Hn\McpServer\Service\LanguageService;
 use Mcp\Types\CallToolResult;
+use Psr\EventDispatcher\EventDispatcherInterface;
 use TYPO3\CMS\Backend\Utility\BackendUtility;
 use TYPO3\CMS\Core\DataHandling\DataHandler;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
@@ -44,6 +47,9 @@ class WriteTableTool extends AbstractRecordTool
                 'Before creating or updating content, always use GetPage to understand the page structure, existing content, and writing style. ' .
                 'Check existing content elements with ReadTable to ensure new content fits the page\'s tone and doesn\'t duplicate existing elements. ' .
                 'For content creation, verify the appropriate colPos by examining existing content layout. ' .
+                'ORDERING: When creating multiple elements on a page, create them in order and chain positions: ' .
+                'create the first element (position "bottom"), then use "after:{uid}" for each subsequent element using the UID returned by the previous create. ' .
+                'Example: create A → uid:100, create B with position "after:100" → uid:101, create C with position "after:101". ' .
                 'Note: If you encounter plugins (CType=list) that reference non-workspace capable tables, ' .
                 'look for record storage folders (doktype=254) where the actual records are stored.',
             'inputSchema' => [
@@ -51,8 +57,8 @@ class WriteTableTool extends AbstractRecordTool
                 'properties' => [
                     'action' => [
                         'type' => 'string',
-                        'description' => 'Action to perform: "create", "update", "translate", or "delete"',
-                        'enum' => ['create', 'update', 'translate', 'delete'],
+                        'description' => 'Action to perform: "create", "update", "move", "translate", or "delete"',
+                        'enum' => ['create', 'update', 'move', 'translate', 'delete'],
                     ],
                     'table' => [
                         'type' => 'string',
@@ -61,7 +67,7 @@ class WriteTableTool extends AbstractRecordTool
                     ],
                     'pid' => [
                         'type' => 'integer',
-                        'description' => 'Page ID for new records (required for "create" action)',
+                        'description' => 'Page ID — required for "create" action, optional for "move" action (target page for cross-page moves)',
                     ],
                     'uid' => [
                         'type' => 'integer',
@@ -89,7 +95,9 @@ class WriteTableTool extends AbstractRecordTool
                     ],
                     'position' => [
                         'type' => 'string',
-                        'description' => 'Position for new records: "top", "bottom", "after:UID", or "before:UID"',
+                        'description' => 'Position for new records: "bottom" (append after last element), "top" (prepend before first), '
+                            . '"after:UID" (insert after specific element), "before:UID" (insert before specific element). '
+                            . 'To create elements in a specific order, use "after:UID" chaining with the UID from the previous create response.',
                         'default' => 'bottom',
                     ],
                 ],
@@ -194,6 +202,17 @@ class WriteTableTool extends AbstractRecordTool
                 }
                 break;
                 
+            case 'move':
+                if ($uid === null) {
+                    throw new ValidationException(['Record UID is required for move action']);
+                }
+                if ($pid === null && $position === 'bottom') {
+                    // Same-page bottom move is a no-op, but allowed
+                } elseif (!preg_match('/^(after|before):\d+$/', $position) && $position !== 'top' && $position !== 'bottom') {
+                    throw new ValidationException(['Position is required for move action. Use "after:UID", "before:UID", "top", or "bottom". For cross-page moves, also provide pid.']);
+                }
+                break;
+
             case 'translate':
                 if ($uid === null) {
                     throw new ValidationException(['Record UID is required for translate action']);
@@ -209,9 +228,19 @@ class WriteTableTool extends AbstractRecordTool
                 break;
 
             default:
-                throw new ValidationException(['Invalid action: ' . $action . '. Valid actions are: create, update, translate, delete']);
+                throw new ValidationException(['Invalid action: ' . $action . '. Valid actions are: create, update, move, translate, delete']);
         }
         
+        // Dispatch BeforeRecordWriteEvent — allows listeners to modify data or veto
+        $eventDispatcher = GeneralUtility::makeInstance(EventDispatcherInterface::class);
+        $beforeEvent = new BeforeRecordWriteEvent($table, $action, $data, $uid, $pid);
+        $eventDispatcher->dispatch($beforeEvent);
+
+        if ($beforeEvent->isVetoed()) {
+            return $this->createErrorResult('Operation vetoed: ' . ($beforeEvent->getVetoReason() ?? 'No reason given'));
+        }
+        $data = $beforeEvent->getData();
+
         // Execute the action
         switch ($action) {
             case 'create':
@@ -225,6 +254,9 @@ class WriteTableTool extends AbstractRecordTool
                 }
                 return $this->updateRecord($table, $uid, $data);
                 
+            case 'move':
+                return $this->moveRecord($table, $uid, $position, $pid);
+
             case 'delete':
                 return $this->deleteRecord($table, $uid);
 
@@ -273,50 +305,10 @@ class WriteTableTool extends AbstractRecordTool
         
         // Prepare the data array
         $newRecordData = $data;
+        $newRecordData['pid'] = $pid;
 
-        // Use DataHandler's native pid-based positioning:
-        // - Positive pid → record is placed at the TOP of that page (DataHandler default)
-        // - Negative pid (-uid) → record is placed AFTER the record with that uid
-        if ($position === 'bottom') {
-            $sortingField = $this->tableAccessService->getSortingFieldName($table);
-            if ($sortingField !== null && !isset($data[$sortingField])) {
-                // Find the last record on this page to insert after it
-                $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)
-                    ->getQueryBuilderForTable($table);
-                $queryBuilder->getRestrictions()->removeAll()
-                    ->add(GeneralUtility::makeInstance(DeletedRestriction::class));
-
-                $lastRecord = $queryBuilder
-                    ->select('uid')
-                    ->from($table)
-                    ->where(
-                        $queryBuilder->expr()->eq('pid', $queryBuilder->createNamedParameter($pid, ParameterType::INTEGER))
-                    )
-                    ->orderBy($sortingField, 'DESC')
-                    ->addOrderBy('uid', 'DESC')
-                    ->setMaxResults(1)
-                    ->executeQuery()
-                    ->fetchAssociative();
-
-                if ($lastRecord) {
-                    // Negative pid tells DataHandler to insert after this record
-                    $newRecordData['pid'] = -(int)$lastRecord['uid'];
-                } else {
-                    // No records exist yet — positive pid inserts as first record
-                    $newRecordData['pid'] = $pid;
-                }
-            } else {
-                $newRecordData['pid'] = $pid;
-            }
-        } elseif (strpos($position, 'after:') === 0) {
-            $referenceUid = (int)substr($position, strlen('after:'));
-            // Resolve live UID to workspace UID if needed, since DataHandler works with real UIDs
-            $wsUid = $this->resolveToWorkspaceUid($table, $referenceUid);
-            $newRecordData['pid'] = -$wsUid;
-        } else {
-            // 'top', 'before:UID', or default — use positive pid (DataHandler inserts at top)
-            $newRecordData['pid'] = $pid;
-        }
+        // Sorting is handled after record creation via DataHandler move commands.
+        // This ensures correct sorting in all cases (live, workspace, colPos).
 
         // Create a unique ID for this new record
         $newId = 'NEW' . uniqid();
@@ -414,39 +406,25 @@ class WriteTableTool extends AbstractRecordTool
         }
         
         
-        // Handle before positioning via move command (after is already handled via negative pid)
-        if (strpos($position, 'before:') === 0) {
-            $referenceUid = (int)substr($position, strlen('before:'));
-
-            // Set up the command map for moving the record
-            $cmdMap = [];
-            $cmdMap[$table][$parentUid]['move'] = [
-                'action' => 'before',
-                'target' => $referenceUid,
-            ];
-
-            // Initialize a new DataHandler for the move operation
-            $moveDataHandler = GeneralUtility::makeInstance(DataHandler::class);
-            $moveDataHandler->BE_USER = $GLOBALS['BE_USER'];
-            $moveDataHandler->start([], $cmdMap);
-            $moveDataHandler->process_cmdmap();
-
-            // Check for errors in the move operation
-            if (!empty($moveDataHandler->errorLog)) {
-                // The record was created but positioning failed
-                $liveUid = $this->getLiveUid($table, $parentUid);
-                return $this->createJsonResult([
-                    'action' => 'create',
-                    'table' => $table,
-                    'uid' => $liveUid,
-                    'warning' => 'Record created but positioning failed: ' . implode(', ', $moveDataHandler->errorLog)
-                ]);
-            }
+        // Handle positioning via DataHandler move command
+        $positionError = $this->applyPosition($table, $parentUid, $pid, $position);
+        if ($positionError !== null) {
+            $liveUid = $this->getLiveUid($table, $parentUid);
+            return $this->createJsonResult([
+                'action' => 'create',
+                'table' => $table,
+                'uid' => $liveUid,
+                'warning' => 'Record created but positioning failed: ' . $positionError,
+            ]);
         }
         
         // Get the live UID for workspace transparency
         $liveUid = $this->getLiveUid($table, $parentUid);
-        
+
+        // Dispatch AfterRecordWriteEvent
+        $eventDispatcher = GeneralUtility::makeInstance(EventDispatcherInterface::class);
+        $eventDispatcher->dispatch(new AfterRecordWriteEvent($table, 'create', $liveUid, $data, $pid));
+
         // Return the result with live UID
         return $this->createJsonResult([
             'action' => 'create',
@@ -557,6 +535,10 @@ class WriteTableTool extends AbstractRecordTool
             }
         }
         
+        // Dispatch AfterRecordWriteEvent
+        $eventDispatcher = GeneralUtility::makeInstance(EventDispatcherInterface::class);
+        $eventDispatcher->dispatch(new AfterRecordWriteEvent($table, 'update', $uid, $data, null));
+
         // Return the result with the original live UID
         return $this->createJsonResult([
             'action' => 'update',
@@ -584,6 +566,10 @@ class WriteTableTool extends AbstractRecordTool
             return $this->createErrorResult('Error deleting record: ' . implode(', ', $dataHandler->errorLog));
         }
         
+        // Dispatch AfterRecordWriteEvent
+        $eventDispatcher = GeneralUtility::makeInstance(EventDispatcherInterface::class);
+        $eventDispatcher->dispatch(new AfterRecordWriteEvent($table, 'delete', $uid, [], null));
+
         return $this->createJsonResult([
             'action' => 'delete',
             'table' => $table,
@@ -591,6 +577,149 @@ class WriteTableTool extends AbstractRecordTool
         ]);
     }
     
+    /**
+     * Move/reorder an existing record
+     */
+    protected function moveRecord(string $table, int $uid, string $position, ?int $targetPid = null): CallToolResult
+    {
+        $workspaceUid = $this->resolveToWorkspaceUid($table, $uid);
+        $record = BackendUtility::getRecord($table, $workspaceUid, 'pid');
+        if (!$record) {
+            return $this->createErrorResult('Record not found');
+        }
+
+        // Use target pid for cross-page moves, or current pid for same-page moves
+        $pid = $targetPid ?? (int)$record['pid'];
+
+        $error = $this->applyPosition($table, $workspaceUid, $pid, $position);
+        if ($error !== null) {
+            return $this->createErrorResult('Error moving record: ' . $error);
+        }
+
+        return $this->createJsonResult([
+            'action' => 'move',
+            'table' => $table,
+            'uid' => $uid,
+            'pid' => $pid,
+        ]);
+    }
+
+    /**
+     * Apply a position to a record via DataHandler move command
+     *
+     * @return string|null Error message, or null on success
+     */
+    protected function applyPosition(string $table, int $recordUid, int $pid, string $position): ?string
+    {
+        if ($position === 'top') {
+            // DataHandler: positive pid = first position on that page
+            $cmdMap = [$table => [$recordUid => ['move' => $pid]]];
+        } elseif ($position === 'bottom') {
+            // Find the last record on the page and move after it
+            $sortingField = $this->tableAccessService->getSortingFieldName($table);
+            $currentWorkspace = $GLOBALS['BE_USER']->workspace ?? 0;
+            $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)
+                ->getQueryBuilderForTable($table);
+            $queryBuilder->getRestrictions()->removeAll()
+                ->add(GeneralUtility::makeInstance(DeletedRestriction::class))
+                ->add(GeneralUtility::makeInstance(WorkspaceRestriction::class, $currentWorkspace));
+
+            $orderField = $sortingField ?? 'uid';
+            $lastUid = $queryBuilder
+                ->select('uid')
+                ->from($table)
+                ->where(
+                    $queryBuilder->expr()->eq('pid', $queryBuilder->createNamedParameter($pid, ParameterType::INTEGER)),
+                    $queryBuilder->expr()->neq('uid', $queryBuilder->createNamedParameter($recordUid, ParameterType::INTEGER))
+                )
+                ->orderBy($orderField, 'DESC')
+                ->setMaxResults(1)
+                ->executeQuery()
+                ->fetchOne();
+
+            if ($lastUid) {
+                // DataHandler: negative uid = after that record
+                $cmdMap = [$table => [$recordUid => ['move' => -(int)$lastUid]]];
+            } else {
+                // No other records on page — move to first position on target page
+                $cmdMap = [$table => [$recordUid => ['move' => $pid]]];
+            }
+        } elseif (strpos($position, 'after:') === 0) {
+            // DataHandler: negative uid = after that record
+            $referenceUid = (int)substr($position, 6);
+            $cmdMap = [$table => [$recordUid => ['move' => -$referenceUid]]];
+        } elseif (strpos($position, 'before:') === 0) {
+            // DataHandler has no native "before" — find the previous sibling and insert after it,
+            // or move to first position on the page if the reference is already first.
+            $referenceUid = (int)substr($position, 7);
+            $cmdMap = $this->buildBeforePositionCmdMap($table, $recordUid, $pid, $referenceUid);
+        } else {
+            // Unknown position — skip
+            return null;
+        }
+
+        $dataHandler = GeneralUtility::makeInstance(DataHandler::class);
+        $dataHandler->BE_USER = $GLOBALS['BE_USER'];
+        $dataHandler->start([], $cmdMap);
+        $dataHandler->process_cmdmap();
+
+        if (!empty($dataHandler->errorLog)) {
+            return implode(', ', $dataHandler->errorLog);
+        }
+
+        return null;
+    }
+
+    /**
+     * Build a cmdMap for "before:X" positioning.
+     *
+     * DataHandler has no native "before" concept. We find the previous sibling of the
+     * reference record (same pid, lower sorting) and insert after it. If the reference
+     * is already the first record on the page, we insert at the top of the page instead.
+     *
+     * @return array cmdMap ready for DataHandler::start()
+     */
+    protected function buildBeforePositionCmdMap(string $table, int $recordUid, int $pid, int $referenceUid): array
+    {
+        $sortingField = $this->tableAccessService->getSortingFieldName($table);
+
+        // Resolve reference record's pid and sorting in workspace context
+        $refRecord = BackendUtility::getRecord($table, $referenceUid, 'pid' . ($sortingField ? ',' . $sortingField : ''));
+        BackendUtility::workspaceOL($table, $refRecord);
+
+        $refPid = $refRecord ? (int)$refRecord['pid'] : $pid;
+        $refSorting = $sortingField && $refRecord ? (int)$refRecord[$sortingField] : 0;
+
+        if ($sortingField && $refSorting > 0) {
+            // Find the record just before the reference in sort order on the same page
+            $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)
+                ->getQueryBuilderForTable($table);
+            $queryBuilder->getRestrictions()->removeAll()
+                ->add(GeneralUtility::makeInstance(DeletedRestriction::class));
+
+            $prevUid = $queryBuilder
+                ->select('uid')
+                ->from($table)
+                ->where(
+                    $queryBuilder->expr()->eq('pid', $queryBuilder->createNamedParameter($refPid, ParameterType::INTEGER)),
+                    $queryBuilder->expr()->lt($sortingField, $queryBuilder->createNamedParameter($refSorting, ParameterType::INTEGER)),
+                    $queryBuilder->expr()->neq('uid', $queryBuilder->createNamedParameter($recordUid, ParameterType::INTEGER))
+                )
+                ->orderBy($sortingField, 'DESC')
+                ->setMaxResults(1)
+                ->executeQuery()
+                ->fetchOne();
+
+            if ($prevUid) {
+                // Insert after the previous sibling
+                return [$table => [$recordUid => ['move' => -(int)$prevUid]]];
+            }
+        }
+
+        // No previous sibling (or no sorting field) — insert as first on the page
+        return [$table => [$recordUid => ['move' => $refPid]]];
+    }
+
     /**
      * Translate a record to another language
      */

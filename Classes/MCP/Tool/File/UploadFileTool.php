@@ -7,6 +7,7 @@ namespace Hn\McpServer\MCP\Tool\File;
 use Hn\McpServer\MCP\Tool\Record\AbstractRecordTool;
 use Mcp\Types\CallToolResult;
 use TYPO3\CMS\Core\Resource\Enum\DuplicationBehavior;
+use TYPO3\CMS\Core\Resource\Index\Indexer;
 use TYPO3\CMS\Core\Resource\ResourceFactory;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 
@@ -105,6 +106,15 @@ class UploadFileTool extends AbstractRecordTool
             if (file_exists($tempPath)) {
                 unlink($tempPath);
             }
+        }
+
+        // Extract metadata (width/height) after file is safely in FAL.
+        // Non-critical enrichment — extractor failures must not abort the response.
+        try {
+            $indexer = GeneralUtility::makeInstance(Indexer::class, $storage);
+            $indexer->extractMetaData($file);
+        } catch (\Exception) {
+            // Metadata extraction is non-critical
         }
 
         $publicUrl = $file->getPublicUrl() ?? '(not public)';

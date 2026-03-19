@@ -7,6 +7,7 @@ namespace Hn\McpServer\Service;
 use Psr\Http\Message\ServerRequestInterface;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
 use TYPO3\CMS\Core\Context\Context;
+use TYPO3\CMS\Core\Context\FileProcessingAspect;
 use TYPO3\CMS\Core\Context\UserAspect;
 use TYPO3\CMS\Core\Context\WorkspaceAspect;
 use TYPO3\CMS\Core\Database\ConnectionPool;
@@ -122,6 +123,11 @@ class McpAuthenticationService
             $context = GeneralUtility::makeInstance(Context::class);
             $context->setAspect('backend.user', new UserAspect($beUser));
             $context->setAspect('workspace', new WorkspaceAspect($workspaceId));
+
+            // Disable deferred image processing — DeferredBackendImageProcessor requires a full
+            // backend session with CSRF tokens, which MCP endpoints don't have (Bearer token only).
+            // Setting deferProcessing=false routes image processing through LocalImageProcessor.
+            $context->setAspect('fileProcessing', new FileProcessingAspect(false));
         }
 
         $tcaFactory = GeneralUtility::getContainer()->get(\TYPO3\CMS\Core\Configuration\Tca\TcaFactory::class);

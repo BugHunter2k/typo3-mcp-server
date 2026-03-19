@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\Service;
 
+use Hn\McpServer\Event\ModifyAvailableFieldsEvent;
+use Psr\EventDispatcher\EventDispatcherInterface;
 use TYPO3\CMS\Backend\Utility\BackendUtility;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
 use TYPO3\CMS\Core\Schema\TcaSchemaFactory;
@@ -306,7 +308,12 @@ class TableAccessService implements SingletonInterface
                 unset($fields[$fieldName]);
             }
         }
-        
+
+        // Allow extensions to modify the field list
+        $eventDispatcher = GeneralUtility::makeInstance(EventDispatcherInterface::class);
+        $event = $eventDispatcher->dispatch(new ModifyAvailableFieldsEvent($table, $type, $fields));
+        $fields = $event->getFields();
+
         return $fields;
     }
     

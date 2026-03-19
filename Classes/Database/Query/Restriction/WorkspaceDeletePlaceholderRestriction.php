@@ -63,14 +63,14 @@ class WorkspaceDeletePlaceholderRestriction implements QueryRestrictionInterface
                     ->select('t3ver_oid')
                     ->from($tableName)
                     ->where(
-                        $subQueryBuilder->expr()->eq('t3ver_state', 
-                            $subQueryBuilder->expr()->literal((string)VersionState::DELETE_PLACEHOLDER->value)
+                        $subQueryBuilder->expr()->eq('t3ver_state',
+                            $subQueryBuilder->createNamedParameter(VersionState::DELETE_PLACEHOLDER->value, \Doctrine\DBAL\ParameterType::INTEGER)
                         ),
-                        $subQueryBuilder->expr()->eq('t3ver_wsid', 
-                            $subQueryBuilder->expr()->literal((string)$this->workspaceId)
+                        $subQueryBuilder->expr()->eq('t3ver_wsid',
+                            $subQueryBuilder->createNamedParameter($this->workspaceId, \Doctrine\DBAL\ParameterType::INTEGER)
                         ),
-                        $subQueryBuilder->expr()->gt('t3ver_oid', 
-                            $subQueryBuilder->expr()->literal('0')
+                        $subQueryBuilder->expr()->gt('t3ver_oid',
+                            $subQueryBuilder->createNamedParameter(0, \Doctrine\DBAL\ParameterType::INTEGER)
                         )
                     );
                 

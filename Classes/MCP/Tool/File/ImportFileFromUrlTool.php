@@ -8,6 +8,7 @@ use Hn\McpServer\MCP\Tool\Record\AbstractRecordTool;
 use Mcp\Types\CallToolResult;
 use TYPO3\CMS\Core\Http\RequestFactory;
 use TYPO3\CMS\Core\Resource\Enum\DuplicationBehavior;
+use TYPO3\CMS\Core\Resource\Index\Indexer;
 use TYPO3\CMS\Core\Resource\ResourceFactory;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 
@@ -22,7 +23,8 @@ class ImportFileFromUrlTool extends AbstractRecordTool
     public function getSchema(): array
     {
         return [
-            'description' => 'Import a file from a URL into a TYPO3 file storage. TYPO3 downloads the file server-side — no Base64 encoding needed. Use this for images, PDFs, and other large files.',
+            'description' => 'Import a file from a public URL into TYPO3 FAL. TYPO3 downloads the file server-side — no Base64 encoding needed. '
+                . 'Use this for files accessible via HTTP(S).',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
@@ -62,6 +64,11 @@ class ImportFileFromUrlTool extends AbstractRecordTool
         $folderIdentifier = (string)$params['folder'];
         $filename = (string)($params['filename'] ?? '');
         $conflictMode = (string)($params['conflictMode'] ?? 'rename');
+
+        $scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            return $this->createErrorResult(sprintf('Only http:// and https:// URLs are allowed, got "%s://".', $scheme));
+        }
 
         if ($filename === '') {
             $filename = $this->deriveFilenameFromUrl($url);
@@ -107,6 +114,15 @@ class ImportFileFromUrlTool extends AbstractRecordTool
             if (file_exists($tempPath)) {
                 unlink($tempPath);
             }
+        }
+
+        // Extract metadata (width/height) after file is safely in FAL.
+        // Non-critical enrichment — extractor failures must not abort the response.
+        try {
+            $indexer = GeneralUtility::makeInstance(Indexer::class, $storage);
+            $indexer->extractMetaData($file);
+        } catch (\Exception) {
+            // Metadata extraction is non-critical
         }
 
         $publicUrl = $file->getPublicUrl() ?? '(not public)';

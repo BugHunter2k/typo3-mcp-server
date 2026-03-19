@@ -30,7 +30,9 @@ class SearchFileTool extends AbstractRecordTool
         return [
             'description' => 'Search for existing files in TYPO3 FAL (File Abstraction Layer) by name, extension, folder, or MIME type. '
                 . 'Returns file metadata and optionally thumbnails as inline images for visual identification. '
-                . 'Use this to find files before creating file references, or to help users identify the correct file from FAL.',
+                . 'Use this to find files before creating file references, or to help users identify the correct file from FAL. '
+                . 'Thumbnails are small (150x150px) inline images for visual comparison. '
+                . 'For larger previews or to save a preview to disk, use PreviewFile which provides a downloadable URL.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
