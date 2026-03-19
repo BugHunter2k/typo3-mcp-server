@@ -262,7 +262,7 @@ Relations are transparently resolved and can be set using simple syntax:
 - **Select relations**: Use comma-separated IDs or arrays
 - **Inline relations**: Provide as nested objects
 - **MM relations**: Handled automatically
-- **File references**: Currently read-only
+- **File references**: Provide `sys_file` UIDs to create references with optional metadata (alt, title, description)
 - **Bidirectional**: Updates both sides as needed
 
 ### Language Support
@@ -305,6 +305,23 @@ For files larger than ~2MB, the Base64 encoding over MCP JSON-RPC becomes imprac
 - BE user permissions re-validated at upload time
 - File extension allowlist + MIME type validation
 - SVG sanitization for SVG uploads
+
+#### Upload Endpoint Details
+
+The upload endpoint (`POST /mcp/upload`) is a standalone HTTP handler that operates outside the normal MCP JSON-RPC transport. It authenticates via one-time Bearer tokens instead of the MCP session.
+
+**Request flow:**
+
+1. **Token consumption** — The Bearer token is SHA-256 hashed and atomically consumed (marked as used) in the database. This prevents replay attacks.
+2. **User re-validation** — The backend user associated with the token is verified as still active (not disabled/deleted).
+3. **Context setup** — A backend user context is bootstrapped with workspace support, but without a full TYPO3 backend session. Image processing is set to synchronous mode (`FileProcessingAspect(false)`) because the deferred processor requires CSRF tokens that don't exist in this context.
+4. **File validation** — Size limits, file extension allowlist, MIME type detection (via `finfo`), and extension-to-MIME consistency checks are enforced.
+5. **FAL storage** — The file is added via `ResourceStorage::addFile()`, then metadata (width/height for images) is explicitly extracted via `Indexer::extractMetaData()`.
+6. **Preview generation** — For images, a thumbnail is pre-generated so it's immediately available in the TYPO3 backend.
+
+**Why synchronous image processing?** The `DeferredBackendImageProcessor` generates a backend URL containing a CSRF token for lazy image processing. This works in the TYPO3 backend where a full session exists, but the upload endpoint only has a one-time Bearer token. Setting `FileProcessingAspect(false)` routes processing through `LocalImageProcessor` which processes images immediately without requiring a backend session.
+
+**Why explicit metadata extraction?** TYPO3's `Indexer::createIndexEntry()` only runs metadata extractors when `auto_extract_metadata` is enabled on the storage, and its built-in `extractRequiredMetaData()` skips non-local drivers (like S3). Calling `Indexer::extractMetaData()` explicitly ensures that registered extractors (e.g., the S3 driver's image dimension extractor) always run, preventing missing `width`/`height` errors in frontend rendering.
 
 ### Workspace Magic
 
@@ -350,8 +367,8 @@ The MCP Server respects all TYPO3 permissions:
 While the MCP Server is powerful, some features are still in development:
 
 ### File References
-- Cannot create `sys_file_reference` records via MCP (use WriteTable as workaround)
-- File metadata updates (alt text, title) require direct table writes
+- File references (`sys_file_reference`) can be created via WriteTable using file field names
+- File metadata (alt text, title, description) can be set when creating references
 
 ### Direct Workspace Management
 - Cannot create/delete workspaces
