@@ -6,6 +6,7 @@ namespace Hn\McpServer\Tests\Functional\MCP\Tool;
 
 use Hn\McpServer\MCP\Tool\Record\ReadTableTool;
 use Hn\McpServer\MCP\Tool\Record\WriteTableTool;
+use TYPO3\CMS\Core\Localization\LanguageServiceFactory;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
 
@@ -30,6 +31,7 @@ class InlineRelationWriteTest extends FunctionalTestCase
         $this->importCSVDataSet(__DIR__ . '/../../Fixtures/be_users.csv');
         $this->importCSVDataSet(__DIR__ . '/../../Fixtures/sys_file.csv');
         $this->setUpBackendUser(1);
+        $GLOBALS['LANG'] = GeneralUtility::makeInstance(LanguageServiceFactory::class)->create('default');
     }
 
     /**
@@ -273,7 +275,7 @@ class InlineRelationWriteTest extends FunctionalTestCase
     public function testInlineRelationSorting(): void
     {
         $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
-        
+
         // Create page and news
         $result = $writeTool->execute([
             'table' => 'pages',
@@ -284,6 +286,7 @@ class InlineRelationWriteTest extends FunctionalTestCase
                 'doktype' => 1,
             ],
         ]);
+        $this->assertFalse($result->isError, 'Page create: ' . ($result->content[0]->text ?? ''));
         $pageUid = json_decode($result->content[0]->text, true)['uid'];
         
         $result = $writeTool->execute([
@@ -296,12 +299,12 @@ class InlineRelationWriteTest extends FunctionalTestCase
         ]);
         $newsUid = json_decode($result->content[0]->text, true)['uid'];
         
-        // Create content elements in reverse order because DataHandler assigns
-        // lower sorting values to newer records when using default 'bottom' position
+        // Create content elements in order — default 'bottom' position assigns
+        // ascending sorting values automatically via DataHandler move commands
         $contentData = [
-            ['header' => 'Third', 'sorting' => 300],
-            ['header' => 'Second', 'sorting' => 200],
-            ['header' => 'First', 'sorting' => 100],
+            ['header' => 'First'],
+            ['header' => 'Second'],
+            ['header' => 'Third'],
         ];
         
         $createdUids = [];
@@ -315,7 +318,7 @@ class InlineRelationWriteTest extends FunctionalTestCase
                     'tx_news_related_news' => $newsUid,
                 ]),
             ]);
-            $this->assertFalse($result->isError);
+            $this->assertFalse($result->isError, 'Create failed: ' . ($result->content[0]->text ?? 'no content'));
             $uid = json_decode($result->content[0]->text, true)['uid'];
             $createdUids[$data['header']] = $uid;
         }

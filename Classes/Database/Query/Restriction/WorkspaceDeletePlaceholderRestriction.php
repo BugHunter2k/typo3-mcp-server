@@ -59,18 +59,22 @@ class WorkspaceDeletePlaceholderRestriction implements QueryRestrictionInterface
                 $subQueryBuilder = $connectionPool->getQueryBuilderForTable($tableName);
                 $subQueryBuilder->getRestrictions()->removeAll();
                 
+                // Note: literal() is intentional here — createNamedParameter() registers params
+                // on the subquery builder, but the SQL is embedded in the outer query via getSQL(),
+                // so the outer query cannot resolve them. literal() is the correct approach for
+                // subqueries in QueryRestrictions where we lack access to the outer QueryBuilder.
                 $subQuery = $subQueryBuilder
                     ->select('t3ver_oid')
                     ->from($tableName)
                     ->where(
                         $subQueryBuilder->expr()->eq('t3ver_state',
-                            $subQueryBuilder->createNamedParameter(VersionState::DELETE_PLACEHOLDER->value, \Doctrine\DBAL\ParameterType::INTEGER)
+                            $subQueryBuilder->expr()->literal((string)VersionState::DELETE_PLACEHOLDER->value)
                         ),
                         $subQueryBuilder->expr()->eq('t3ver_wsid',
-                            $subQueryBuilder->createNamedParameter($this->workspaceId, \Doctrine\DBAL\ParameterType::INTEGER)
+                            $subQueryBuilder->expr()->literal((string)$this->workspaceId)
                         ),
                         $subQueryBuilder->expr()->gt('t3ver_oid',
-                            $subQueryBuilder->createNamedParameter(0, \Doctrine\DBAL\ParameterType::INTEGER)
+                            $subQueryBuilder->expr()->literal('0')
                         )
                     );
                 

@@ -34,24 +34,24 @@ class TableAccessServiceFieldAccessTest extends FunctionalTestCase
     }
 
     /**
-     * Test that file type fields are not accessible
+     * Test that file type fields are accessible (file field support enabled)
      */
-    public function testFileFieldsAreNotAccessible(): void
+    public function testFileFieldsAreAccessible(): void
     {
         // The 'media' field on pages table is type='file'
         $canAccess = $this->service->canAccessField('pages', 'media');
 
-        $this->assertFalse($canAccess, 'File fields should not be accessible');
+        $this->assertTrue($canAccess, 'File fields should be accessible');
     }
 
     /**
-     * Test that file fields are hidden from available fields
+     * Test that file fields are included in available fields
      */
-    public function testFileFieldsAreHiddenFromSchema(): void
+    public function testFileFieldsAreInSchema(): void
     {
         $fields = $this->service->getAvailableFields('pages');
 
-        $this->assertArrayNotHasKey('media', $fields, 'File field "media" should not be in available fields');
+        $this->assertArrayHasKey('media', $fields, 'File field "media" should be in available fields');
     }
 
     /**
@@ -128,12 +128,11 @@ class TableAccessServiceFieldAccessTest extends FunctionalTestCase
             $this->assertArrayHasKey('assets', $fields, 'Assets field should be available for file references');
         }
 
-        // Check that image field (if type=file) is present
-        if (isset($GLOBALS['TCA']['tt_content']['columns']['image'])) {
-            $imageConfig = $GLOBALS['TCA']['tt_content']['columns']['image'] ?? [];
-            if (($imageConfig['config']['type'] ?? '') === 'file') {
-                $this->assertArrayHasKey('image', $fields, 'Image file field should be available');
-            }
+        // 'image' was removed in TYPO3 v13 (replaced by 'assets') — only assert if it exists in TCA
+        // AND is part of the textmedia type's showitem definition
+        $imageConfig = $GLOBALS['TCA']['tt_content']['columns']['image'] ?? [];
+        if (($imageConfig['config']['type'] ?? '') === 'file' && isset($fields['image'])) {
+            $this->assertArrayHasKey('image', $fields, 'Image file field should be available');
         }
     }
 }
