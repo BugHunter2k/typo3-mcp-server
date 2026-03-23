@@ -311,7 +311,7 @@ class WriteTableTool extends AbstractRecordTool
         // This ensures correct sorting in all cases (live, workspace, colPos).
 
         // Create a unique ID for this new record
-        $newId = 'NEW' . uniqid();
+        $newId = 'NEW' . bin2hex(random_bytes(8));
 
         // Build unified dataMap: parent + all inline children in one structure.
         // DataHandler resolves NEW keys, sets foreign_field, and handles workspace
@@ -931,7 +931,7 @@ class WriteTableTool extends AbstractRecordTool
             foreach ($value as $index => $item) {
                 if (is_array($item)) {
                     // Embedded record data — create a new child record
-                    $childNewId = 'NEW' . uniqid();
+                    $childNewId = 'NEW' . bin2hex(random_bytes(8));
 
                     // Remove foreign field — DataHandler sets it via inline parent context
                     unset($item[$foreignField]);
@@ -958,7 +958,7 @@ class WriteTableTool extends AbstractRecordTool
                 } elseif (is_numeric($item) && (int)$item > 0) {
                     if ($isFileReference) {
                         // File reference shorthand: plain UID means uid_local (sys_file UID)
-                        $childNewId = 'NEW' . uniqid();
+                        $childNewId = 'NEW' . bin2hex(random_bytes(8));
                         $dataMap[$foreignTable][$childNewId] = [
                             'uid_local' => (int)$item,
                             'pid' => $pid,
@@ -1031,13 +1031,16 @@ class WriteTableTool extends AbstractRecordTool
                 }
             }
 
-            // Query existing children from database
+            // Query existing children from database.
+            // Use DeletedRestriction only (not WorkspaceRestriction) so we get
+            // live records with their live UIDs. This avoids the mismatch where
+            // WorkspaceRestriction returns workspace overlay UIDs that don't match
+            // the live UIDs in $newChildUids.
             $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)
                 ->getQueryBuilderForTable($foreignTable);
             $queryBuilder->getRestrictions()
                 ->removeAll()
-                ->add(GeneralUtility::makeInstance(DeletedRestriction::class))
-                ->add(GeneralUtility::makeInstance(WorkspaceRestriction::class, $GLOBALS['BE_USER']->workspace ?? 0));
+                ->add(GeneralUtility::makeInstance(DeletedRestriction::class));
 
             $existingChildren = $queryBuilder
                 ->select('uid')
@@ -1046,7 +1049,9 @@ class WriteTableTool extends AbstractRecordTool
                     $queryBuilder->expr()->eq(
                         $foreignField,
                         $queryBuilder->createNamedParameter($parentLiveUid, ParameterType::INTEGER)
-                    )
+                    ),
+                    // Only live records (not workspace overlays which have t3ver_oid > 0)
+                    $queryBuilder->expr()->eq('t3ver_oid', 0)
                 )
                 ->executeQuery()
                 ->fetchAllAssociative();
@@ -1056,14 +1061,16 @@ class WriteTableTool extends AbstractRecordTool
             $isEmbeddedTable = !empty($foreignTableTCA['ctrl']['hideTable']);
 
             foreach ($existingChildren as $existingChild) {
-                $childUid = (int)$existingChild['uid'];
-                if (!in_array($childUid, $newChildUids, true)) {
+                $childLiveUid = (int)$existingChild['uid'];
+                if (!in_array($childLiveUid, $newChildUids, true)) {
                     if ($isEmbeddedTable) {
-                        // Embedded (hideTable) children: delete via DataHandler cmdMap
-                        $cmdMap[$foreignTable][$childUid]['delete'] = 1;
+                        // Embedded (hideTable) children: delete via DataHandler cmdMap.
+                        // DataHandler handles workspace versioning (creates delete placeholder).
+                        $cmdMap[$foreignTable][$childLiveUid]['delete'] = 1;
                     } else {
-                        // Independent children: clear foreign_field via DataHandler dataMap
-                        $dataMap[$foreignTable][$childUid] = [$foreignField => 0];
+                        // Independent children: clear foreign_field via DataHandler dataMap.
+                        // DataHandler handles workspace versioning (creates workspace overlay).
+                        $dataMap[$foreignTable][$childLiveUid] = [$foreignField => 0];
                     }
                 }
             }
