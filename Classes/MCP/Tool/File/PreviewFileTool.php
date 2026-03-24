@@ -36,7 +36,10 @@ class PreviewFileTool extends AbstractRecordTool
     {
         return [
             'description' => 'Generate a preview thumbnail for a file in TYPO3 FAL. '
+                . 'Built-in support for image files (JPEG, PNG, GIF, WebP). '
+                . 'PDF and Office previews require PSR-14 event listeners (e.g. imgix integration) — without them, these types return "preview not available". '
                 . 'Returns a download URL for the resized thumbnail (NOT the original file). '
+                . 'Width/height values above 1200px are silently clamped to 1200px. '
                 . 'The URL requires Bearer token authentication. '
                 . 'Download with: curl -H "Authorization: Bearer $TOKEN" -o /tmp/preview.jpg "URL"',
             'inputSchema' => [

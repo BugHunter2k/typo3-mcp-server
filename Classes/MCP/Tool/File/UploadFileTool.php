@@ -24,9 +24,9 @@ class UploadFileTool extends AbstractRecordTool
     public function getSchema(): array
     {
         return [
-            'description' => 'Upload a file to TYPO3 FAL via Base64-encoded data. '
-                . 'For files accessible via URL, prefer ImportFileFromUrl which avoids encoding overhead entirely. '
-                . 'For local files > 2MB, use GetUploadCredentials + curl for direct HTTP upload without Base64 overhead.',
+            'description' => 'Upload a file to TYPO3 FAL via Base64-encoded data. Best for small files only (< 1 MB). '
+                . 'PREFERRED ALTERNATIVES: For files accessible via URL, use ImportFileFromUrl (no encoding overhead). '
+                . 'For local files, use GetUploadCredentials + curl for direct HTTP upload — faster, no Base64 overhead, supports up to 50 MB.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [

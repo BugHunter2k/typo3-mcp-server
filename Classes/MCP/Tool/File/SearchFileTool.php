@@ -28,10 +28,10 @@ class SearchFileTool extends AbstractRecordTool
     public function getSchema(): array
     {
         return [
-            'description' => 'Search for existing files in TYPO3 FAL (File Abstraction Layer) by name, extension, folder, or MIME type. '
-                . 'Returns file metadata and optionally thumbnails as inline images for visual identification. '
-                . 'Use this to find files before creating file references, or to help users identify the correct file from FAL. '
-                . 'Thumbnails are small (150x150px) inline images for visual comparison. '
+            'description' => 'Search for existing files in TYPO3 FAL by name, extension, folder, or MIME type. '
+                . 'At least one search criterion is required (name, extension, folder, mimeType, or storage). '
+                . 'Returns file metadata and optionally Base64-encoded JPEG thumbnails (150x150px) as inline images. '
+                . 'SVG files are excluded from thumbnail generation. '
                 . 'For larger previews or to save a preview to disk, use PreviewFile which provides a downloadable URL.',
             'inputSchema' => [
                 'type' => 'object',

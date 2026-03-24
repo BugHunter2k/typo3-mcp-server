@@ -24,7 +24,8 @@ class ImportFileFromUrlTool extends AbstractRecordTool
     {
         return [
             'description' => 'Import a file from a public URL into TYPO3 FAL. TYPO3 downloads the file server-side — no Base64 encoding needed. '
-                . 'Use this for files accessible via HTTP(S).',
+                . 'Use this for files accessible via HTTP(S). HTTP redirects are followed automatically. '
+                . 'Download timeout: 30 seconds. For larger files or slow servers, download locally first and use GetUploadCredentials + curl.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
