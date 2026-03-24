@@ -888,19 +888,25 @@ class TableAccessService implements SingletonInterface
         if (!$typeField) {
             return ['1' => 'Default'];
         }
-        
+
+        // Handle foreign type notation (e.g. "uid_local:type" in sys_file_reference).
+        // The type is derived from a related record's field and has no local column or items list.
+        if (str_contains($typeField, ':')) {
+            return ['0' => 'Default'];
+        }
+
         $typeConfig = $GLOBALS['TCA'][$table]['columns'][$typeField]['config'] ?? [];
         $items = $typeConfig['items'] ?? [];
-        
+
         // Use the shared parseSelectItems method
         $parsed = $this->parseSelectItems($items);
-        
+
         // Convert to the expected format (value => label)
         $types = [];
         foreach ($parsed['values'] as $value) {
             $types[$value] = $parsed['labels'][$value] ?? $value;
         }
-        
+
         return $types;
     }
     
