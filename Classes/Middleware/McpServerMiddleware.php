@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Hn\McpServer\Middleware;
 
 use Hn\McpServer\Http\CorsHeadersTrait;
+use Hn\McpServer\Http\FilePreviewEndpoint;
+use Hn\McpServer\Http\FileUploadEndpoint;
 use Hn\McpServer\Http\McpEndpoint;
 use Hn\McpServer\Http\OAuthAuthorizeEndpoint;
 use Hn\McpServer\Http\OAuthTokenEndpoint;
@@ -35,12 +37,18 @@ class McpServerMiddleware implements MiddlewareInterface
     }
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
-        $path = $request->getUri()->getPath();
-        
+        $path = rtrim($request->getUri()->getPath(), '/');
+
         // Route to appropriate endpoint
         return match($path) {
             // Main MCP endpoint
             '/mcp' => GeneralUtility::makeInstance(McpEndpoint::class)($request),
+
+            // File preview endpoint (serves thumbnails as direct image response)
+            '/mcp/preview' => GeneralUtility::makeInstance(FilePreviewEndpoint::class)($request),
+
+            // File upload endpoint (receives files via pre-signed tokens)
+            '/mcp/upload' => GeneralUtility::makeInstance(FileUploadEndpoint::class)($request),
             
             // OAuth endpoints
             '/mcp_oauth/authorize' => GeneralUtility::makeInstance(OAuthAuthorizeEndpoint::class)($request),
@@ -52,7 +60,8 @@ class McpServerMiddleware implements MiddlewareInterface
             // OAuth discovery endpoints (.well-known)
             '/.well-known/oauth-authorization-server' => GeneralUtility::makeInstance(OAuthAuthServerMetadataEndpoint::class)($request),
             '/.well-known/oauth-protected-resource' => GeneralUtility::makeInstance(OAuthResourceMetadataEndpoint::class)($request),
-            
+            '/.well-known/oauth-protected-resource/mcp' => GeneralUtility::makeInstance(OAuthResourceMetadataEndpoint::class)($request),
+
             // TYPO3 main page with OAuth continuation check
             '/typo3/main' => $this->handleOAuthCookieContinuation($request, $handler),
             
