@@ -33,14 +33,14 @@ All these operations happen safely in workspaces, giving you full control to rev
 ## Project Status
 
 | Feature                    | Status          | Notes                                                                                                         |
-  |----------------------------|-----------------|---------------------------------------------------------------------------------------------------------------|
+|----------------------------|-----------------|---------------------------------------------------------------------------------------------------------------|
 | **MCP Connection**         | ✅ Ready         | HTTP and stdin/stdout protocols (thanks to [logiscape/mcp-sdk-php](https://github.com/logiscape/mcp-sdk-php)) |
 | **Authentication**         | ✅ Ready         | OAuth for Backend Users                                                                                       |
-| **Page Tree Navigation**   | ✅ Ready         | Page tree view similar to the TYPO3 backend                                                                   |
+| **Page Tree Navigation**   | ✅ Ready         | Page tree view similar to the TYPO3 backend, workspace-aware                                                  |
 | **Page Content Discovery** | ✅ Ready         | Similar to the List or Page module with backend layout support                                                |
 | **Record Reading/Writing** | ✅ Ready         | Read and write any workspace-capable TYPO3 table (core & extensions) with full schema inspection              |
+| **File Management**        | ✅ Ready         | Browse, search, upload (Base64, URL import, direct HTTP), preview with thumbnails                             |
 | **Content Translation**    | ⚠️ Experimental | Implemented, needs real-world testing                                                                         |
-| **Fileadmin Support**      | ❌ Missing       | Not yet implemented                                                                                           |
 | **Workspace Selection**    | ❌ Missing       | Currently uses the first writable workspace of the user                                                       |
 
 While there are a lot of automated tests, and even some [LLM test](Tests/Llm/README.md), TYPO3 instances are widely different and Language Models are also widely different. Feel free to [create issues here on GitHub](https://github.com/logiscape/mcp-sdk-php/issues) or [share experiences in the typo3-core-ai channel](https://typo3.slack.com/archives/C091M0M7BL6). 
