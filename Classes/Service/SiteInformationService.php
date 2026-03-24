@@ -170,8 +170,43 @@ class SiteInformationService
     }
 
     /**
+     * Get the base URL for the current request context
+     *
+     * Returns a full URL like "https://example.com" that can be used
+     * to build absolute URLs. Uses Site configuration first, falls back
+     * to request headers (proxy-safe).
+     *
+     * @return string|null Base URL or null if unavailable
+     */
+    public function getBaseUrl(): ?string
+    {
+        // Try to get from first available site
+        $sites = $this->siteFinder->getAllSites();
+        foreach ($sites as $site) {
+            $base = $site->getBase();
+            $baseUrl = (string)$base;
+
+            // If site has a proper base URL (not just "/")
+            if (!empty($baseUrl) && $baseUrl !== '/' && strpos($baseUrl, 'http') === 0) {
+                return rtrim($baseUrl, '/');
+            }
+        }
+
+        // Fallback to current request
+        if ($this->currentRequest !== null) {
+            $host = $this->getHostFromRequest();
+            if (!empty($host)) {
+                $scheme = $this->currentRequest->getUri()->getScheme() ?: 'https';
+                return $scheme . '://' . $host;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Get host from current request
-     * 
+     *
      * @return string|null
      */
     protected function getHostFromRequest(): ?string
