@@ -43,15 +43,16 @@ class WriteTableTool extends AbstractRecordTool
         sort($tableNames); // Sort alphabetically for better readability
         
         return [
-            'description' => 'Create, update, translate, or delete records in workspace-capable TYPO3 tables. All changes are made in workspace context and require publishing to become live. Language fields (sys_language_uid) can be provided as ISO codes (e.g., "de", "fr") instead of numeric IDs. ' .
-                'Before creating or updating content, always use GetPage to understand the page structure, existing content, and writing style. ' .
-                'Check existing content elements with ReadTable to ensure new content fits the page\'s tone and doesn\'t duplicate existing elements. ' .
-                'For content creation, verify the appropriate colPos by examining existing content layout. ' .
-                'ORDERING: When creating multiple elements on a page, create them in order and chain positions: ' .
-                'create the first element (position "bottom"), then use "after:{uid}" for each subsequent element using the UID returned by the previous create. ' .
-                'Example: create A → uid:100, create B with position "after:100" → uid:101, create C with position "after:101". ' .
-                'Note: If you encounter plugins (CType=list) that reference non-workspace capable tables, ' .
-                'look for record storage folders (doktype=254) where the actual records are stored.',
+            'description' => 'Create, update, translate, move, or delete records in workspace-capable TYPO3 tables. All changes are made in workspace context and require publishing to become live. ' .
+                'Language fields (sys_language_uid) accept ISO codes ("de", "fr") instead of numeric IDs. Date/time fields accept ISO 8601 strings and are auto-converted to timestamps. Slug fields are auto-normalized (leading slash ensured). ' .
+                'REQUIRED PARAMETERS PER ACTION: ' .
+                'create: table, pid, data. update: table, uid, data. delete: table, uid. move: table, uid, position (and optionally pid for cross-page). translate: table, uid, data (with sys_language_uid). ' .
+                'INLINE RELATIONS (CRITICAL): On update, passing an inline field REPLACES ALL existing children — omitted children are deleted (embedded) or unlinked (independent). ' .
+                'To keep existing children, include their UIDs: [2546, 2547, {"CType": "textmedia", "header": "New"}]. To update an existing child: {"uid": 2546, "header": "Updated"}. Order in the array defines sorting. ' .
+                'Nested inline relations are supported: child record data may itself contain inline arrays. ' .
+                'FLEXFORM FIELDS: Pass as JSON objects (auto-converted to XML). Use "settings.fieldName" keys for plugin settings. ' .
+                'ORDERING: When creating multiple elements on a page, chain positions: create first with "bottom", then "after:{uid}" for each next. ' .
+                'Before creating content, use GetPage + ReadTable to understand page structure and existing content.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
@@ -75,14 +76,13 @@ class WriteTableTool extends AbstractRecordTool
                     ],
                     'data' => [
                         'type' => 'object',
-                        'description' => 'Record data with field names as keys and their values (required for "create", "update", and "translate" actions). ' .
-                            'Uses the same field syntax as ReadTable output. Language fields (sys_language_uid) accept ISO codes like "de", "fr" instead of numeric IDs. ' .
-                            'Inline relations can be specified as arrays - UIDs for independent tables, record data for embedded tables. ' .
-                            'File fields (type=file, e.g. image, media, assets) accept an array of sys_file UIDs or objects with uid_local and optional metadata: ' .
-                            '[3, 4] or [{"uid_local": 3, "title": "My image", "alternative": "Alt text"}]. Use SearchFile to find existing file UIDs. ' .
-                            'For text fields in update actions, instead of providing the full text, you can provide an array of search-and-replace operations: ' .
-                            '[{"search": "old text", "replace": "new text"}]. Each operation can optionally include "replaceAll": true. ' .
-                            'Operations are applied sequentially. Each search string must match exactly once unless replaceAll is true.',
+                        'description' => 'Record data as field-value pairs. ' .
+                            'INLINE RELATIONS: For embedded tables, pass record data arrays to create new children or {"uid": N} to reference existing ones (optionally with fields to update). ' .
+                            'For independent tables, pass UIDs to link. On update, the array REPLACES all children — include existing UIDs to keep them. ' .
+                            'FILE FIELDS (image, media, assets): Array of sys_file UIDs [3, 4] or objects [{"uid_local": 3, "title": "...", "alternative": "...", "description": "Caption"}]. ' .
+                            'SEARCH-AND-REPLACE (update only): For text/input/email/link/slug fields, pass [{"search": "old", "replace": "new"}] instead of full text. ' .
+                            'Add "replaceAll": true per operation if search may match multiple times. Only these field types support search-and-replace. ' .
+                            'FLEXFORM: Pass as JSON object with "settings.fieldName" keys — auto-converted to XML.',
                         'additionalProperties' => true,
                         'examples' => [
                             ['title' => 'News Title', 'bodytext' => 'News <b>content</b>', 'datetime' => '2024-01-01 10:00:00'],
@@ -95,9 +95,10 @@ class WriteTableTool extends AbstractRecordTool
                     ],
                     'position' => [
                         'type' => 'string',
-                        'description' => 'Position for new records: "bottom" (append after last element), "top" (prepend before first), '
+                        'description' => 'Position for "create" and "move" actions: "bottom" (default, append after last), "top" (prepend before first), '
                             . '"after:UID" (insert after specific element), "before:UID" (insert before specific element). '
-                            . 'To create elements in a specific order, use "after:UID" chaining with the UID from the previous create response.',
+                            . 'For "move", position is required unless moving to bottom of same page. '
+                            . 'To create elements in order, chain "after:UID" with the UID from the previous response.',
                         'default' => 'bottom',
                     ],
                 ],

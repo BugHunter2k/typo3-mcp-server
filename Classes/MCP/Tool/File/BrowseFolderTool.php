@@ -23,7 +23,9 @@ class BrowseFolderTool extends AbstractRecordTool
     public function getSchema(): array
     {
         return [
-            'description' => 'Browse folder contents in a TYPO3 file storage. Lists subfolders and files with metadata (size, type, modification date). Use combined identifier format like "1:/user_upload/" where 1 is the storage UID.',
+            'description' => 'Browse folder contents in a TYPO3 file storage. Lists subfolders and files with metadata (size, type, modification date). ' .
+                'Use combined identifier format like "1:/user_upload/" where 1 is the storage UID. ' .
+                'Note: File listing is limited to 100 files per folder. Use SearchFile for larger folders or filtered results.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [

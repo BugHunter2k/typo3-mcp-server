@@ -160,7 +160,7 @@ class TcaFormattingUtility
                             . " when updating pass existing UIDs to keep them"
                             . " and new record data arrays to add — order defines sorting]";
                     } else {
-                        $result .= " [INDEPENDENT: pass existing UIDs to link records]";
+                        $result .= " [INDEPENDENT: pass existing UIDs to link, or record data arrays to create and link]";
                     }
                 }
                 break;
