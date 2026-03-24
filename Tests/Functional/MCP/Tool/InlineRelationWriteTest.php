@@ -115,6 +115,17 @@ class InlineRelationWriteTest extends FunctionalTestCase
     }
 
     /**
+     * Test writing file references via file field type
+     */
+    public function testWriteFileReferencesViaFileField(): void
+    {
+        // File field support is now enabled — sys_file_reference is accessible
+        $service = GeneralUtility::makeInstance(\Hn\McpServer\Service\TableAccessService::class);
+        $canAccess = $service->canAccessField('pages', 'media');
+        $this->assertTrue($canAccess, 'File fields should be accessible now');
+    }
+
+    /**
      * Test updating inline relations through parent record using UID arrays
      */
     public function testWriteInlineRelationThroughParentUsingUids(): void
@@ -685,6 +696,83 @@ class InlineRelationWriteTest extends FunctionalTestCase
     /**
      * Nested inline relations: news → content elements (embedded) → file references (embedded)
      *
+     * Verifies that inline children of inline children are created recursively.
+     * This is the pattern that failed for lia_ctypes: tt_content → tx_liactypes_ctypes.
+     */
+    public function testNestedInlineRelationsAreCreatedRecursively(): void
+    {
+        $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
+
+        // Create a page
+        $result = $writeTool->execute([
+            'table' => 'pages',
+            'action' => 'create',
+            'pid' => 0,
+            'data' => ['title' => 'Nested inline test', 'doktype' => 1],
+        ]);
+        $this->assertFalse($result->isError);
+        $pageUid = json_decode($result->content[0]->text, true)['uid'];
+
+        // Create news with nested inline: content_elements contain media (sys_file_reference)
+        $result = $writeTool->execute([
+            'table' => 'tx_news_domain_model_news',
+            'action' => 'create',
+            'pid' => $pageUid,
+            'data' => [
+                'title' => 'News with nested inline',
+                'content_elements' => [
+                    [
+                        'header' => 'Content with image',
+                        'CType' => 'text',
+                        'media' => [
+                            ['uid_local' => 1, 'title' => 'Test image'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+        $this->assertFalse($result->isError, 'Nested inline creation should work: ' . json_encode($result->jsonSerialize()));
+        $newsUid = json_decode($result->content[0]->text, true)['uid'];
+
+        // Verify the content element was created
+        $readTool = GeneralUtility::makeInstance(ReadTableTool::class);
+        $result = $readTool->execute([
+            'table' => 'tx_news_domain_model_news',
+            'uid' => $newsUid,
+        ]);
+        $news = json_decode($result->content[0]->text, true)['records'][0];
+        $this->assertCount(1, $news['content_elements'], 'One content element should be linked');
+
+        // Verify the file reference was created on the content element
+        $contentUid = $news['content_elements'][0];
+        $result = $readTool->execute(['table' => 'tt_content', 'uid' => $contentUid]);
+        $content = json_decode($result->content[0]->text, true)['records'][0];
+        $this->assertEquals('Content with image', $content['header']);
+
+        // Check ALL sys_file_reference records to debug
+        $queryBuilder = \TYPO3\CMS\Core\Utility\GeneralUtility::makeInstance(
+            \TYPO3\CMS\Core\Database\ConnectionPool::class
+        )->getQueryBuilderForTable('sys_file_reference');
+        $queryBuilder->getRestrictions()->removeAll();
+        $allFileReferences = $queryBuilder
+            ->select('*')
+            ->from('sys_file_reference')
+            ->executeQuery()
+            ->fetchAllAssociative();
+
+        // Filter for our content element
+        $fileReferences = array_filter($allFileReferences, fn($r) => (int)$r['uid_foreign'] === $contentUid && $r['tablenames'] === 'tt_content');
+
+        $debugInfo = 'Content UID: ' . $contentUid . ', All sys_file_reference records: ' . json_encode(
+            array_map(fn($r) => ['uid' => $r['uid'], 'uid_local' => $r['uid_local'], 'uid_foreign' => $r['uid_foreign'], 'tablenames' => $r['tablenames'], 'fieldname' => $r['fieldname'], 'title' => $r['title']], $allFileReferences)
+        );
+
+        $this->assertCount(1, $fileReferences, 'One file reference should be created for the content element. ' . $debugInfo);
+        $ref = reset($fileReferences);
+        $this->assertEquals(1, $ref['uid_local'], 'File reference should point to sys_file uid 1');
+        $this->assertEquals('Test image', $ref['title']);
+    }
+
     /**
      * Embedded links with hideTable=true work with string '1' value
      *
