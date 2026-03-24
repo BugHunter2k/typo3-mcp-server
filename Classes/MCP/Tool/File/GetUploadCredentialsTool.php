@@ -106,12 +106,20 @@ class GetUploadCredentialsTool extends AbstractRecordTool
             return $this->createErrorResult('Could not determine server base URL. Check site configuration.');
         }
 
-        // Lazy cleanup: Delete expired tokens (D6: only expired, not used)
-        $this->cleanupExpiredTokens();
-
-        // Insert token record
+        // Verify upload tokens table exists (created by ext_tables.sql)
         $connection = GeneralUtility::makeInstance(ConnectionPool::class)
             ->getConnectionForTable('tx_mcpserver_upload_tokens');
+
+        if (!$connection->createSchemaManager()->tablesExist(['tx_mcpserver_upload_tokens'])) {
+            return $this->createErrorResult(
+                'Required database table "tx_mcpserver_upload_tokens" does not exist. '
+                . 'A TYPO3 backend admin must run the Database Analyzer in the Install Tool '
+                . '(Admin Tools → Maintenance → Analyze Database Structure) to create it.'
+            );
+        }
+
+        // Lazy cleanup: Delete expired tokens (D6: only expired, not used)
+        $this->cleanupExpiredTokens();
 
         $now = time();
         $connection->insert('tx_mcpserver_upload_tokens', [
