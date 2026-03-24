@@ -95,26 +95,49 @@ RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]</code></pre>
                                         </button>
                                     </div>
                                 </div>
-                                <div class="mt-2">
-                                    <small class="text-muted">
-                                        MCP endpoint status:
-                                        <span class="endpoint-status" data-endpoint="{baseUrl}/mcp" data-check-auth="true" id="mcp-endpoint-status">
-                                            <span class="status-icon"></span>
-                                            <span class="status-tooltip"></span>
-                                        </span>
-                                        <br>
-                                        <code class="small">{baseUrl}/.well-known/oauth-authorization-server</code>
-                                        <span class="endpoint-status" data-endpoint="{baseUrl}/.well-known/oauth-authorization-server" data-check-content="true">
-                                            <span class="status-icon"></span>
-                                            <span class="status-tooltip"></span>
-                                        </span>
-                                        <br>
-                                        <code class="small">{baseUrl}/.well-known/oauth-protected-resource</code>
-                                        <span class="endpoint-status" data-endpoint="{baseUrl}/.well-known/oauth-protected-resource" data-check-content="true">
-                                            <span class="status-icon"></span>
-                                            <span class="status-tooltip"></span>
-                                        </span>
-                                    </small>
+                                <div class="endpoint-checks mt-3">
+                                    <h6 class="endpoint-checks-title">Endpoint Status</h6>
+                                    <table class="endpoint-checks-table">
+                                        <tr>
+                                            <td class="endpoint-checks-label">
+                                                MCP Endpoint + Auth Header
+                                                <code class="endpoint-checks-url">{baseUrl}/mcp</code>
+                                            </td>
+                                            <td class="endpoint-checks-status">
+                                                <span class="endpoint-status" data-endpoint="{baseUrl}/mcp" data-check-auth="true" id="mcp-endpoint-status">
+                                                    <span class="status-icon"></span>
+                                                    <span class="status-text"></span>
+                                                    <span class="status-tooltip"></span>
+                                                </span>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td class="endpoint-checks-label">
+                                                OAuth Authorization Server
+                                                <code class="endpoint-checks-url">{baseUrl}/.well-known/oauth-authorization-server</code>
+                                            </td>
+                                            <td class="endpoint-checks-status">
+                                                <span class="endpoint-status" data-endpoint="{baseUrl}/.well-known/oauth-authorization-server" data-check-content="true">
+                                                    <span class="status-icon"></span>
+                                                    <span class="status-text"></span>
+                                                    <span class="status-tooltip"></span>
+                                                </span>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td class="endpoint-checks-label">
+                                                OAuth Protected Resource
+                                                <code class="endpoint-checks-url">{baseUrl}/.well-known/oauth-protected-resource</code>
+                                            </td>
+                                            <td class="endpoint-checks-status">
+                                                <span class="endpoint-status" data-endpoint="{baseUrl}/.well-known/oauth-protected-resource" data-check-content="true">
+                                                    <span class="status-icon"></span>
+                                                    <span class="status-text"></span>
+                                                    <span class="status-tooltip"></span>
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    </table>
                                 </div>
                             </div>
 

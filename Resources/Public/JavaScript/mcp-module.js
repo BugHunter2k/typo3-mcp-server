@@ -755,12 +755,8 @@ function checkEndpointStatuses() {
  */
 function checkEndpoint(element, endpoint, checkContent) {
     // Set checking state
-    element.classList.add('checking');
-    element.classList.remove('success', 'warning', 'error');
-    
-    const statusIcon = element.querySelector('.status-icon');
-    const statusTooltip = element.querySelector('.status-tooltip');
-    
+    setEndpointStatus(element, 'checking', 'Checking endpoint...');
+
     // Make the request
     fetch(endpoint, {
         method: 'GET',
@@ -806,10 +802,16 @@ function checkEndpoint(element, endpoint, checkContent) {
 function setEndpointStatus(element, status, message) {
     element.classList.remove('checking', 'success', 'warning', 'error');
     element.classList.add(status);
-    
+
     const statusTooltip = element.querySelector('.status-tooltip');
     if (statusTooltip) {
         statusTooltip.textContent = message;
+    }
+
+    const statusText = element.querySelector('.status-text');
+    if (statusText) {
+        const labels = { checking: 'Checking...', success: 'OK', warning: 'Warning', error: 'Error' };
+        statusText.textContent = labels[status] || status;
     }
 }
 
@@ -818,9 +820,8 @@ function setEndpointStatus(element, status, message) {
  */
 function checkMcpEndpointAuth(element, endpoint) {
     // Set checking state
-    element.classList.add('checking');
-    element.classList.remove('success', 'warning', 'error');
-    
+    setEndpointStatus(element, 'checking', 'Checking endpoint...');
+
     // Create a test request with a dummy Bearer token
     fetch(endpoint + '?test=auth', {
         method: 'GET',
@@ -835,8 +836,8 @@ function checkMcpEndpointAuth(element, endpoint) {
         // We expect this to fail with 401 since it's a fake token
         // But we can check if our test mode returns header info
         return response.json().then(data => {
-            // Check if the response indicates the header was received
-            if (data.headers_received && data.headers_received.authorization) {
+            // Check if the response indicates the header was received (via any source)
+            if (data.auth_header_detected) {
                 setEndpointStatus(element, 'success', 'MCP endpoint is accessible and can receive Authorization headers');
                 // Hide the warning since headers work
                 const warningDiv = document.getElementById('auth-header-warning');
