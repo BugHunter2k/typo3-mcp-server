@@ -929,7 +929,18 @@ class WriteTableTool extends AbstractRecordTool
             $childIdentifiers = [];
 
             foreach ($value as $index => $item) {
-                if (is_array($item)) {
+                if (is_array($item) && isset($item['uid']) && is_numeric($item['uid']) && (int)$item['uid'] > 0) {
+                    // Existing record reference via {"uid": N, ...} — keep or update
+                    $existingUid = (int)$item['uid'];
+                    unset($item['uid'], $item[$foreignField]);
+
+                    // If additional fields provided, add as update to dataMap
+                    if (!empty($item)) {
+                        $dataMap[$foreignTable][$existingUid] = $item;
+                    }
+
+                    $childIdentifiers[] = $existingUid;
+                } elseif (is_array($item)) {
                     // Embedded record data — create a new child record
                     $childNewId = 'NEW' . bin2hex(random_bytes(8));
 
