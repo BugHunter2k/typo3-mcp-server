@@ -237,4 +237,28 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('base URL', $result->content[0]->text);
     }
+
+    public function testMissingTokensTableReturnsActionableError(): void
+    {
+        $connection = GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getConnectionForTable('tx_mcpserver_upload_tokens');
+
+        // Drop the table to simulate missing schema.
+        // Each FunctionalTestCase gets its own database, so no cleanup needed.
+        $connection->executeStatement('DROP TABLE IF EXISTS tx_mcpserver_upload_tokens');
+
+        $siteInformationService = $this->createMock(SiteInformationService::class);
+        $siteInformationService->method('getBaseUrl')->willReturn('https://example.com');
+
+        $tool = new GetUploadCredentialsTool($siteInformationService);
+
+        $result = $tool->execute([
+            'folder' => '1:/',
+            'filename' => 'test.jpg',
+        ]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('tx_mcpserver_upload_tokens', $result->content[0]->text);
+        $this->assertStringContainsString('Database Analyzer', $result->content[0]->text);
+    }
 }

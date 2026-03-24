@@ -558,6 +558,87 @@ class InlineRelationWriteTest extends FunctionalTestCase
     }
 
     /**
+     * Referencing existing inline children via {"uid": N} object syntax on update
+     */
+    public function testUidObjectReferencesExistingInlineChildren(): void
+    {
+        $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
+
+        // Create page + news
+        $result = $writeTool->execute([
+            'table' => 'pages',
+            'action' => 'create',
+            'pid' => 0,
+            'data' => ['title' => 'UID object test page', 'doktype' => 1],
+        ]);
+        $pageUid = json_decode($result->content[0]->text, true)['uid'];
+
+        $result = $writeTool->execute([
+            'table' => 'tx_news_domain_model_news',
+            'action' => 'create',
+            'pid' => $pageUid,
+            'data' => ['title' => 'News for uid object test'],
+        ]);
+        $newsUid = json_decode($result->content[0]->text, true)['uid'];
+
+        // Create 2 content elements linked to the news
+        $contentUids = [];
+        for ($i = 1; $i <= 2; $i++) {
+            $result = $writeTool->execute([
+                'table' => 'tt_content',
+                'action' => 'create',
+                'pid' => $pageUid,
+                'data' => [
+                    'header' => "Existing content $i",
+                    'CType' => 'text',
+                    'tx_news_related_news' => $newsUid,
+                ],
+            ]);
+            $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+            $contentUids[] = json_decode($result->content[0]->text, true)['uid'];
+        }
+
+        // Update news: keep existing via {"uid": N}, update one header, add a new element
+        $result = $writeTool->execute([
+            'table' => 'tx_news_domain_model_news',
+            'action' => 'update',
+            'uid' => $newsUid,
+            'data' => [
+                'content_elements' => [
+                    ['uid' => $contentUids[0]],                                    // keep as-is
+                    ['uid' => $contentUids[1], 'header' => 'Updated header'],      // keep + update
+                    ['header' => 'Brand new element', 'CType' => 'text'],          // create new
+                ],
+            ],
+        ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+
+        // Verify: 3 children linked to this news
+        $readTool = GeneralUtility::makeInstance(ReadTableTool::class);
+        $result = $readTool->execute([
+            'table' => 'tx_news_domain_model_news',
+            'uid' => $newsUid,
+        ]);
+        $news = json_decode($result->content[0]->text, true)['records'][0];
+        $this->assertCount(3, $news['content_elements'], 'Should have 3 content elements');
+
+        // Verify: first element unchanged
+        $this->assertContains($contentUids[0], $news['content_elements']);
+
+        // Verify: second element still linked and header updated
+        $this->assertContains($contentUids[1], $news['content_elements']);
+        $queryBuilder = GeneralUtility::makeInstance(\TYPO3\CMS\Core\Database\ConnectionPool::class)
+            ->getQueryBuilderForTable('tt_content');
+        $queryBuilder->getRestrictions()->removeAll();
+        $updatedRecord = $queryBuilder->select('header')
+            ->from('tt_content')
+            ->where($queryBuilder->expr()->eq('uid', $contentUids[1]))
+            ->executeQuery()
+            ->fetchAssociative();
+        $this->assertSame('Updated header', $updatedRecord['header']);
+    }
+
+    /**
      * Creating content elements with embedded record data arrays in the parent
      */
     public function testCreateContentElementsAsEmbeddedRecordData(): void
