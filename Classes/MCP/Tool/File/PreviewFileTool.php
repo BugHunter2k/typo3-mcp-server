@@ -7,6 +7,7 @@ namespace Hn\McpServer\MCP\Tool\File;
 use Hn\McpServer\Event\FilePreviewEvent;
 use Hn\McpServer\MCP\Tool\Record\AbstractRecordTool;
 use Mcp\Types\CallToolResult;
+use Mcp\Types\ImageContent;
 use Mcp\Types\TextContent;
 use Psr\EventDispatcher\EventDispatcherInterface;
 use TYPO3\CMS\Core\Resource\File;
@@ -38,16 +39,19 @@ class PreviewFileTool extends AbstractRecordTool
             'description' => 'Generate a preview thumbnail for a file in TYPO3 FAL. '
                 . 'Built-in support for image files (JPEG, PNG, GIF, WebP). '
                 . 'PDF and Office previews require PSR-14 event listeners (e.g. imgix integration) — without them, these types return "preview not available". '
-                . 'Returns a download URL for the resized thumbnail (NOT the original file). '
                 . 'Width/height values above 1200px are silently clamped to 1200px. '
-                . 'The URL requires Bearer token authentication. '
-                . 'Download with: curl -H "Authorization: Bearer $TOKEN" -o /tmp/preview.jpg "URL"',
+                . 'Use inline=true (default) to get the image as Base64 directly in the response. '
+                . 'Use inline=false to get a download URL (requires Bearer token auth via curl).',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
                     'uid' => [
                         'type' => 'integer',
-                        'description' => 'The sys_file UID of the file to preview',
+                        'description' => 'The sys_file UID of the file to preview (provide uid OR identifier)',
+                    ],
+                    'identifier' => [
+                        'type' => 'string',
+                        'description' => 'Combined identifier of the file (e.g. "1:/user_upload/photo.jpg"). Alternative to uid.',
                     ],
                     'width' => [
                         'type' => 'integer',
@@ -57,8 +61,12 @@ class PreviewFileTool extends AbstractRecordTool
                         'type' => 'integer',
                         'description' => 'Preview height in pixels (default: 400, max: 1200)',
                     ],
+                    'inline' => [
+                        'type' => 'boolean',
+                        'description' => 'Return image as Base64 inline (default: true). Set to false for a download URL instead.',
+                    ],
                 ],
-                'required' => ['uid'],
+                'required' => [],
             ],
             'annotations' => [
                 'readOnlyHint' => true,
@@ -69,23 +77,42 @@ class PreviewFileTool extends AbstractRecordTool
 
     protected function doExecute(array $params): CallToolResult
     {
-        $fileUid = (int)$params['uid'];
+        $fileUid = (int)($params['uid'] ?? 0);
+        $identifier = (string)($params['identifier'] ?? '');
         $width = min((int)($params['width'] ?? self::DEFAULT_WIDTH), self::MAX_WIDTH);
         $height = min((int)($params['height'] ?? self::DEFAULT_HEIGHT), self::MAX_HEIGHT);
+        $inline = (bool)($params['inline'] ?? true);
+
+        if ($fileUid <= 0 && $identifier === '') {
+            return $this->createErrorResult('Either "uid" or "identifier" is required.');
+        }
 
         $resourceFactory = GeneralUtility::makeInstance(ResourceFactory::class);
-        $file = $resourceFactory->getFileObject($fileUid);
+
+        if ($fileUid > 0) {
+            $file = $resourceFactory->getFileObject($fileUid);
+        } else {
+            $file = $resourceFactory->getFileObjectFromCombinedIdentifier($identifier);
+        }
 
         $mimeType = $file->getMimeType();
         $metadata = $this->buildMetadataText($file, $mimeType);
 
-        // Built-in: image preview via proxy endpoint
+        // Built-in: image preview
         if ($this->isPreviewableImage($mimeType)) {
-            $previewUrl = $this->buildPreviewUrl($fileUid, $width, $height);
+            if ($inline) {
+                return $this->inlinePreview($file, $width, $height, $metadata);
+            }
 
+            $previewUrl = $this->buildPreviewUrl($file->getUid(), $width, $height);
             return new CallToolResult([
                 new TextContent($metadata),
-                new TextContent('Preview URL: ' . $previewUrl),
+                new TextContent(
+                    'Preview URL: ' . $previewUrl . "\n\n"
+                    . "Download with MCP OAuth Bearer token (same token used for this MCP session):\n"
+                    . "curl -H 'Authorization: Bearer \$MCP_TOKEN' -o preview.jpg '" . $previewUrl . "'\n\n"
+                    . "IMPORTANT: Use the MCP OAuth Bearer token for authentication. Do NOT use cookies or other auth methods."
+                ),
             ]);
         }
 
@@ -108,6 +135,36 @@ class PreviewFileTool extends AbstractRecordTool
         return new CallToolResult([
             new TextContent($metadata),
             new TextContent($errorMessage),
+        ]);
+    }
+
+    private function inlinePreview(
+        \TYPO3\CMS\Core\Resource\File $file,
+        int $width,
+        int $height,
+        string $metadata
+    ): CallToolResult {
+        $processedFile = $file->process(
+            ProcessedFile::CONTEXT_IMAGEPREVIEW,
+            ['width' => $width, 'height' => $height]
+        );
+
+        $localPath = $processedFile->getForLocalProcessing(false);
+        if ($localPath === '' || !file_exists($localPath)) {
+            return $this->createErrorResult('Failed to generate thumbnail');
+        }
+
+        $imageData = file_get_contents($localPath);
+        if ($imageData === false) {
+            return $this->createErrorResult('Failed to read processed file');
+        }
+
+        return new CallToolResult([
+            new TextContent($metadata),
+            new ImageContent(
+                base64_encode($imageData),
+                $processedFile->getMimeType()
+            ),
         ]);
     }
 
