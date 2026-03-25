@@ -122,6 +122,15 @@ The MCP Server provides these tools for interacting with TYPO3:
 ### Content Modification
 - **WriteTable** - Create, update, or delete records (safely in workspace)
 
+### File Management
+- **ListStorages** - List available file storages
+- **BrowseFolder** - Browse folder contents (subfolders and files)
+- **SearchFile** - Search for files with thumbnail previews
+- **PreviewFile** - Generate file preview thumbnails
+- **UploadFile** - Upload files via Base64 (for small files < 2MB)
+- **ImportFileFromUrl** - Import files from a public URL
+- **GetUploadCredentials** - Generate one-time upload token for large files via direct HTTP upload
+
 > Each tool provides detailed schema information when called. See the Real-World Scenarios below for practical examples.
 
 ## Real-World Scenarios
@@ -253,7 +262,7 @@ Relations are transparently resolved and can be set using simple syntax:
 - **Select relations**: Use comma-separated IDs or arrays
 - **Inline relations**: Provide as nested objects
 - **MM relations**: Handled automatically
-- **File references**: Currently read-only
+- **File references**: Provide `sys_file` UIDs to create references with optional metadata (alt, title, description)
 - **Bidirectional**: Updates both sides as needed
 
 ### Language Support
@@ -270,6 +279,49 @@ Example:
 // Instead of: "sys_language_uid": 1
 // Use: "sys_language_uid": "de"
 ```
+
+### Large File Uploads (Pre-Signed URL Pattern)
+
+For files larger than ~2MB, the Base64 encoding over MCP JSON-RPC becomes impractical. The MCP Server provides a pre-signed URL pattern (similar to AWS S3) for direct HTTP uploads:
+
+```
+1. AI calls GetUploadCredentials(folder, filename)
+   → Server generates one-time token, returns URL + token
+
+2. AI runs curl in Bash:
+   curl -X POST 'https://example.com/mcp/upload' \
+     -H 'Authorization: Bearer <token>' \
+     -F 'file=@/path/to/local/file.jpg'
+   → File uploaded directly via HTTP, no Base64
+
+3. Server validates token, uploads to FAL
+   → Returns { uid, name, size, mimeType, path, url }
+```
+
+**Security model:**
+- One-time tokens stored as SHA-256 hash in database
+- Tokens expire after 5 minutes
+- Target folder and filename locked at token creation time
+- BE user permissions re-validated at upload time
+- File extension allowlist + MIME type validation
+- SVG sanitization for SVG uploads
+
+#### Upload Endpoint Details
+
+The upload endpoint (`POST /mcp/upload`) is a standalone HTTP handler that operates outside the normal MCP JSON-RPC transport. It authenticates via one-time Bearer tokens instead of the MCP session.
+
+**Request flow:**
+
+1. **Token consumption** — The Bearer token is SHA-256 hashed and atomically consumed (marked as used) in the database. This prevents replay attacks.
+2. **User re-validation** — The backend user associated with the token is verified as still active (not disabled/deleted).
+3. **Context setup** — A backend user context is bootstrapped with workspace support, but without a full TYPO3 backend session. Image processing is set to synchronous mode (`FileProcessingAspect(false)`) because the deferred processor requires CSRF tokens that don't exist in this context.
+4. **File validation** — Size limits, file extension allowlist, MIME type detection (via `finfo`), and extension-to-MIME consistency checks are enforced.
+5. **FAL storage** — The file is added via `ResourceStorage::addFile()`, then metadata (width/height for images) is explicitly extracted via `Indexer::extractMetaData()`.
+6. **Preview generation** — For images, a thumbnail is pre-generated so it's immediately available in the TYPO3 backend.
+
+**Why synchronous image processing?** The `DeferredBackendImageProcessor` generates a backend URL containing a CSRF token for lazy image processing. This works in the TYPO3 backend where a full session exists, but the upload endpoint only has a one-time Bearer token. Setting `FileProcessingAspect(false)` routes processing through `LocalImageProcessor` which processes images immediately without requiring a backend session.
+
+**Why explicit metadata extraction?** TYPO3's `Indexer::createIndexEntry()` only runs metadata extractors when `auto_extract_metadata` is enabled on the storage, and its built-in `extractRequiredMetaData()` skips non-local drivers (like S3). Calling `Indexer::extractMetaData()` explicitly ensures that registered extractors (e.g., the S3 driver's image dimension extractor) always run, preventing missing `width`/`height` errors in frontend rendering.
 
 ### Workspace Magic
 
@@ -314,10 +366,9 @@ The MCP Server respects all TYPO3 permissions:
 
 While the MCP Server is powerful, some features are still in development:
 
-### Image/File Handling
-- Currently read-only access to file references
-- Cannot upload new files or modify existing ones
-- Workaround: Reference existing files by ID
+### File References
+- File references (`sys_file_reference`) can be created via WriteTable using file field names
+- File metadata (alt text, title, description) can be set when creating references
 
 ### Direct Workspace Management
 - Cannot create/delete workspaces

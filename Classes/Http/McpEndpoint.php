@@ -31,6 +31,7 @@ use Hn\McpServer\Http\CorsHeadersTrait;
 class McpEndpoint
 {
     use CorsHeadersTrait;
+
     /**
      * eID entry point via __invoke method
      */
