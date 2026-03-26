@@ -30,13 +30,13 @@ class OAuthAuthServerMetadataEndpoint
         
         $metadata = $oauthService->getMetadata($baseUrl);
         
-        return $this->createJsonResponse($metadata);
+        return $this->createJsonResponse($metadata, $request);
     }
 
-    private function createJsonResponse(array $data): ResponseInterface
+    private function createJsonResponse(array $data, ServerRequestInterface $request): ResponseInterface
     {
         $response = new JsonResponse($data);
-        
+
         // Add CORS headers
         $response = $this->addCorsHeaders($response, $request);
         

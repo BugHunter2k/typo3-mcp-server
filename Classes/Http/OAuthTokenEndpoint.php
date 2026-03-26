@@ -97,7 +97,7 @@ class OAuthTokenEndpoint
             $statusCode,
             ['Content-Type' => 'application/json']
         );
-        
-        return $this->addCorsHeaders($response, $request);
+
+        return $this->addCorsHeaders($response);
     }
 }
