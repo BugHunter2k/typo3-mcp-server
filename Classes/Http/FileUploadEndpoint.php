@@ -42,7 +42,7 @@ class FileUploadEndpoint
     {
         // Handle CORS preflight
         if ($request->getMethod() === 'OPTIONS') {
-            return $this->handlePreflightRequest();
+            return $this->handlePreflightRequest($request);
         }
 
         // Only POST allowed
@@ -462,7 +462,7 @@ class FileUploadEndpoint
         $stream->rewind();
 
         $response = new Response($stream, 200, ['Content-Type' => 'application/json']);
-        return $this->addCorsHeaders($response);
+        return $this->addCorsHeaders($response, $request);
     }
 
     /**
@@ -478,6 +478,6 @@ class FileUploadEndpoint
         $stream->rewind();
 
         $response = new Response($stream, $status, ['Content-Type' => 'application/json']);
-        return $this->addCorsHeaders($response);
+        return $this->addCorsHeaders($response, $request);
     }
 }
