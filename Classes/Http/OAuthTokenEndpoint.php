@@ -22,7 +22,7 @@ class OAuthTokenEndpoint
     {
         // Handle preflight OPTIONS request
         if ($request->getMethod() === 'OPTIONS') {
-            return $this->handlePreflightRequest();
+            return $this->handlePreflightRequest($request);
         }
 
         try {
@@ -74,7 +74,7 @@ class OAuthTokenEndpoint
                 ['Content-Type' => 'application/json']
             );
             
-            return $this->addCorsHeaders($response);
+            return $this->addCorsHeaders($response, $request);
 
         } catch (\Throwable $e) {
             return $this->createErrorResponse('server_error', $e->getMessage(), 500);
@@ -98,6 +98,6 @@ class OAuthTokenEndpoint
             ['Content-Type' => 'application/json']
         );
         
-        return $this->addCorsHeaders($response);
+        return $this->addCorsHeaders($response, $request);
     }
 }

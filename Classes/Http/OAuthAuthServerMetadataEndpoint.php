@@ -22,7 +22,7 @@ class OAuthAuthServerMetadataEndpoint
     {
         // Handle preflight OPTIONS request
         if ($request->getMethod() === 'OPTIONS') {
-            return $this->handlePreflightRequest();
+            return $this->handlePreflightRequest($request);
         }
 
         $baseUrl = $this->getBaseUrl($request);
@@ -38,7 +38,7 @@ class OAuthAuthServerMetadataEndpoint
         $response = new JsonResponse($data);
         
         // Add CORS headers
-        $response = $this->addCorsHeaders($response);
+        $response = $this->addCorsHeaders($response, $request);
         
         // Add cache headers (short cache for dynamic content)
         $response = $response

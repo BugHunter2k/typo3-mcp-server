@@ -34,7 +34,7 @@ class FilePreviewEndpoint
     public function __invoke(ServerRequestInterface $request): ResponseInterface
     {
         if ($request->getMethod() === 'OPTIONS') {
-            return $this->handlePreflightRequest();
+            return $this->handlePreflightRequest($request);
         }
 
         if ($request->getMethod() !== 'GET') {
@@ -99,7 +99,7 @@ class FilePreviewEndpoint
             'Content-Disposition' => 'inline; filename="preview-' . $fileUid . '.' . $processedFile->getExtension() . '"',
         ]);
 
-        return $this->addCorsHeaders($response);
+        return $this->addCorsHeaders($response, $request);
     }
 
     private function errorResponse(string $message, int $status): ResponseInterface

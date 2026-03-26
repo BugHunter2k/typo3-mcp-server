@@ -22,7 +22,7 @@ class OAuthRegisterEndpoint
     {
         // Handle preflight OPTIONS request
         if ($request->getMethod() === 'OPTIONS') {
-            return $this->handlePreflightRequest();
+            return $this->handlePreflightRequest($request);
         }
 
         try {
@@ -73,7 +73,7 @@ class OAuthRegisterEndpoint
                 ]
             );
             
-            return $this->addCorsHeaders($response);
+            return $this->addCorsHeaders($response, $request);
 
         } catch (\Throwable $e) {
             return $this->createErrorResponse('server_error', $e->getMessage(), 500);
@@ -97,6 +97,6 @@ class OAuthRegisterEndpoint
             ['Content-Type' => 'application/json']
         );
         
-        return $this->addCorsHeaders($response);
+        return $this->addCorsHeaders($response, $request);
     }
 }

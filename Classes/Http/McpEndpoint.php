@@ -228,7 +228,7 @@ class McpEndpoint
             ]
         );
 
-        return $this->addCorsHeaders($response);
+        return $this->addCorsHeaders($response, $request);
     }
 
     /**
