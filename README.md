@@ -38,8 +38,8 @@ All these operations happen safely in workspaces, giving you full control to rev
 | **Authentication**         | ✅ Ready         | OAuth for Backend Users                                                                                       |
 | **Page Tree Navigation**   | ✅ Ready         | Page tree view similar to the TYPO3 backend, workspace-aware                                                  |
 | **Page Content Discovery** | ✅ Ready         | Similar to the List or Page module with backend layout support                                                |
-| **Record Reading/Writing** | ✅ Ready         | Read and write any workspace-capable TYPO3 table (core & extensions) with full schema inspection              |
-| **File Management**        | ✅ Ready         | Browse, search, upload (Base64, URL import, direct HTTP), preview with thumbnails                             |
+| **Record Reading/Writing** | ✅ Ready         | Read and write any workspace-capable TYPO3 table with schema inspection, inline relations (`{"uid": N}` syntax for existing records, replace-all semantics on update), file references |
+| **File Management**        | ✅ Ready         | Browse, search, upload (Base64, URL import, direct HTTP upload up to 50 MB), preview as inline Base64 or download URL |
 | **Content Translation**    | ⚠️ Experimental | Implemented, needs real-world testing                                                                         |
 | **Workspace Selection**    | ❌ Missing       | Currently uses the first writable workspace of the user                                                       |
 

@@ -114,22 +114,22 @@ The MCP Server provides these tools for interacting with TYPO3:
 - **ListTables** - Discover available TYPO3 tables and extensions
 
 ### Content Reading
-- **ReadTable** - Read records from any TYPO3 table with filtering
+- **ReadTable** - Read records from any TYPO3 table with filtering, pagination, and optional field selection. Embedded inline relations return full child records, independent relations return UIDs. Hidden records included, deleted excluded. Max limit: 1000
 - **Search** - Find content across tables using full-text search
-- **GetTableSchema** - Understand table structure and field types
+- **GetTableSchema** - Understand table structure and field types for a specific record type. Types may be filtered by backend TSconfig
 - **GetFlexFormSchema** - Get plugin configuration schemas
 
 ### Content Modification
-- **WriteTable** - Create, update, or delete records (safely in workspace)
+- **WriteTable** - Create, update, translate, move, or delete records (safely in workspace). Inline relations use replace-all semantics on update — include existing UIDs to keep them. Supports `{"uid": N}` to reference existing children with optional field updates. Nested inline relations and file field references supported. FlexForm fields accept JSON (auto-converted to XML)
 
 ### File Management
-- **ListStorages** - List available file storages
-- **BrowseFolder** - Browse folder contents (subfolders and files)
-- **SearchFile** - Search for files with thumbnail previews
-- **PreviewFile** - Generate file preview thumbnails
-- **UploadFile** - Upload files via Base64 (for small files < 2MB)
-- **ImportFileFromUrl** - Import files from a public URL
-- **GetUploadCredentials** - Generate one-time upload token for large files via direct HTTP upload
+- **ListStorages** - List available file storages with capabilities (public, writable, default)
+- **BrowseFolder** - Browse folder contents with metadata (100 files per folder limit)
+- **SearchFile** - Search for files by name, extension, folder, or MIME type with optional Base64 JPEG thumbnails (150x150px). At least one search criterion required
+- **PreviewFile** - Generate file preview as inline Base64 image (default) or download URL. Supports lookup by sys_file UID or combined identifier. Width/height clamped to 1200px max. PDF/Office previews require PSR-14 event listeners
+- **UploadFile** - Upload files via Base64 (best for files < 1 MB). Prefer GetUploadCredentials for larger files
+- **ImportFileFromUrl** - Import files from a public URL (server-side download, 30s timeout, redirects followed)
+- **GetUploadCredentials** - Generate one-time upload token for direct HTTP upload via curl (up to 50 MB, 5-minute expiry, SHA-256 hashed token storage)
 
 > Each tool provides detailed schema information when called. See the Real-World Scenarios below for practical examples.
 

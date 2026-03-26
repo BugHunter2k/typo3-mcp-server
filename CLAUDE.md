@@ -4,6 +4,9 @@
 - The Tools for LLMs don't need backwards compatibility. We can completely change parameters or even their names if it better describes them without it being a breaking change.
 - Every Tool (that uses the database) must use TYPO3 Workspaces explicitly. Live data must never be directly edited. However: Ensure that the workspaces are invisible to the MCP client, for example, by only exposing the live id.
 - This MCP does create a Workspace if one doesn't exist. This is intentional and must work even in tests. A mixture of live and workspace data is a real scenario, and the tool results must work as if there are no workspaces.
+- Inline relations use `buildInlineDataMap()` + `syncInlineRelations()` with a single atomic DataHandler call. On update, inline fields have replace-all semantics — absent children are deleted (embedded) or unlinked (independent). `{"uid": N}` references existing children, optionally with field updates.
+- Events: `BeforeRecordWriteEvent` (modify data or veto), `AfterRecordWriteEvent` (post-write notification), `ModifyAvailableFieldsEvent` (adjust field list per table/type).
+- Tables with foreign type notation (e.g. `sys_file_reference` with `ctrl.type = 'uid_local:type'`) are treated as typeless — `getTypeFieldName()` returns null for these.
 - In Tests: check all MCP tool call for failure like this: `$this->assertFalse($result->isError, json_encode($result->jsonSerialize()));`
 - Always check if there is some typo3 core api that can be used for TCA related data actions.
 - If the TYPO3 instance has no language support, then hide all aspects of translation like parameters or even database fields. Check the LanguageService.php to check support.
