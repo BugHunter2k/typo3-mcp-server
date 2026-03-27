@@ -100,8 +100,11 @@ class GetUploadCredentialsTool extends AbstractRecordTool
         $token = bin2hex(random_bytes(32));
         $tokenHash = hash('sha256', $token);
 
-        // Get base URL
-        $baseUrl = $this->siteInformationService->getBaseUrl();
+        // Get base URL from current request (not site config, which may return wrong domain in multi-site setups)
+        $baseUrl = $this->resolveBaseUrlFromRequest();
+        if ($baseUrl === null) {
+            $baseUrl = $this->siteInformationService->getBaseUrl();
+        }
         if ($baseUrl === null) {
             return $this->createErrorResult('Could not determine server base URL. Check site configuration.');
         }
@@ -185,5 +188,33 @@ class GetUploadCredentialsTool extends AbstractRecordTool
             return round($bytes / 1024, 1) . ' KB';
         }
         return round($bytes / (1024 * 1024), 1) . ' MB';
+    }
+
+    /**
+     * Resolve base URL from the current HTTP request.
+     *
+     * In multi-site setups, SiteInformationService::getBaseUrl() may return the
+     * wrong domain (first site with absolute URL). This method uses the actual
+     * request host instead, which matches what the MCP client connected to.
+     */
+    private function resolveBaseUrlFromRequest(): ?string
+    {
+        $request = $GLOBALS['TYPO3_REQUEST'] ?? null;
+        if ($request === null) {
+            return null;
+        }
+
+        $uri = $request->getUri();
+        if ($uri->getHost() === '' || $uri->getHost() === 'localhost') {
+            return null;
+        }
+
+        $baseUrl = $uri->getScheme() . '://' . $uri->getHost();
+        $port = $uri->getPort();
+        if ($port !== null && $port !== 443 && $port !== 80) {
+            $baseUrl .= ':' . $port;
+        }
+
+        return $baseUrl;
     }
 }
