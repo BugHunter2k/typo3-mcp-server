@@ -167,14 +167,75 @@ class TcaFormattingUtility
                 break;
         }
         
-        // Add required flag if set
-        if (isset($config['eval']) && strpos($config['eval'], 'required') !== false) {
+        // --- Common constraints (apply to all field types) ---
+
+        // Required: TYPO3 12+ explicit flag or legacy eval
+        if (!empty($config['required'])) {
+            $result .= " [Required]";
+        } elseif (isset($config['eval']) && strpos($config['eval'], 'required') !== false) {
             $result .= " [Required]";
         }
-        
-        // Add default value if set
-        if (isset($config['default']) && $type !== 'check') {
-            $result .= " [Default: " . $config['default'] . "]";
+
+        // Read-only
+        if (!empty($config['readOnly'])) {
+            $result .= " [Read-only]";
+        }
+
+        // Nullable
+        if (!empty($config['nullable'])) {
+            $result .= " [Nullable]";
+        }
+
+        // Min/max items (select, group, inline, file, folder, category)
+        if (isset($config['minitems']) && (int)$config['minitems'] > 0) {
+            $result .= " [minItems: " . (int)$config['minitems'] . "]";
+        }
+        if (isset($config['maxitems']) && (int)$config['maxitems'] > 0) {
+            $result .= " [maxItems: " . (int)$config['maxitems'] . "]";
+        }
+
+        // Range constraints (number, datetime)
+        if (isset($config['range'])) {
+            $range = $config['range'];
+            if (isset($range['lower'])) {
+                $result .= " [min: " . $range['lower'] . "]";
+            }
+            if (isset($range['upper'])) {
+                $result .= " [max: " . $range['upper'] . "]";
+            }
+        }
+
+        // Min/max for number type (TYPO3 12+)
+        if (isset($config['min']) && $config['min'] !== '') {
+            $result .= " [min: " . $config['min'] . "]";
+        }
+        if (isset($config['max']) && $config['max'] !== '' && $type !== 'input') {
+            // Skip 'max' for input type — already handled above as max length
+            $result .= " [max: " . $config['max'] . "]";
+        }
+
+        // Eval constraints (trim, unique, email, int, etc.)
+        if (isset($config['eval'])) {
+            $evalRules = GeneralUtility::trimExplode(',', $config['eval'], true);
+            $relevantEvals = array_diff($evalRules, ['required', 'trim', 'null']);
+            if (!empty($relevantEvals)) {
+                $result .= " [eval: " . implode(', ', $relevantEvals) . "]";
+            }
+        }
+
+        // Default value
+        if (array_key_exists('default', $config) && $type !== 'check') {
+            $default = $config['default'];
+            if (is_bool($default)) {
+                $result .= " [Default: " . ($default ? 'true' : 'false') . "]";
+            } elseif ($default !== '' && $default !== null) {
+                $result .= " [Default: " . $default . "]";
+            }
+        }
+
+        // Placeholder
+        if (!empty($config['placeholder'])) {
+            $result .= " [Placeholder: " . TableAccessService::translateLabel((string)$config['placeholder']) . "]";
         }
     }
 }
