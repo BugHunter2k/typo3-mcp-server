@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Hn\McpServer\MCP\Tool\File;
 
 use Hn\McpServer\MCP\Tool\Record\AbstractRecordTool;
-use Hn\McpServer\Service\SiteInformationService;
+use Hn\McpServer\MCP\Tool\RequestAwareToolInterface;
+use Hn\McpServer\Service\BaseUrlService;
 use Mcp\Types\CallToolResult;
+use Psr\Http\Message\ServerRequestInterface;
 use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Resource\ResourceFactory;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
@@ -18,17 +20,22 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
  * large file uploads from Claude Code without Base64 encoding overhead.
  * The token is stored as SHA-256 hash in the database for security.
  */
-class GetUploadCredentialsTool extends AbstractRecordTool
+class GetUploadCredentialsTool extends AbstractRecordTool implements RequestAwareToolInterface
 {
     private const DEFAULT_MAX_SIZE = 52428800; // 50 MB
     private const TOKEN_EXPIRY_SECONDS = 300; // 5 minutes
 
-    protected SiteInformationService $siteInformationService;
+    private ?ServerRequestInterface $request = null;
 
-    public function __construct(SiteInformationService $siteInformationService)
-    {
+    public function __construct(
+        private readonly BaseUrlService $baseUrlService,
+    ) {
         parent::__construct();
-        $this->siteInformationService = $siteInformationService;
+    }
+
+    public function setRequest(ServerRequestInterface $request): void
+    {
+        $this->request = $request;
     }
 
     /**
@@ -100,13 +107,11 @@ class GetUploadCredentialsTool extends AbstractRecordTool
         $token = bin2hex(random_bytes(32));
         $tokenHash = hash('sha256', $token);
 
-        // Get base URL from current request (not site config, which may return wrong domain in multi-site setups)
-        $baseUrl = $this->resolveBaseUrlFromRequest();
-        if ($baseUrl === null) {
-            $baseUrl = $this->siteInformationService->getBaseUrl();
-        }
-        if ($baseUrl === null) {
-            return $this->createErrorResult('Could not determine server base URL. Check site configuration.');
+        // Resolve base URL via service (request-aware, with site validation)
+        if ($this->request !== null) {
+            $baseUrl = $this->baseUrlService->getBaseUrl($this->request);
+        } else {
+            $baseUrl = $this->baseUrlService->getBaseUrlFromSiteConfiguration();
         }
 
         // Verify upload tokens table exists (created by ext_tables.sql)
@@ -149,7 +154,7 @@ class GetUploadCredentialsTool extends AbstractRecordTool
         $lines[] = sprintf('Token: %s', $token);
         $lines[] = sprintf('Expires in: %d seconds', self::TOKEN_EXPIRY_SECONDS);
         $lines[] = sprintf('Max size: %s', $this->formatFileSize($maxSize));
-        $lines[] = sprintf('Target: %s%s', $folderIdentifier, $sanitizedFilename);
+        $lines[] = sprintf('Target: %s%s', rtrim($folderIdentifier, '/') . '/', $sanitizedFilename);
         $lines[] = '';
         $lines[] = 'Usage (run in Bash):';
         $lines[] = sprintf("curl -X POST '%s' \\", $uploadUrl);
@@ -190,31 +195,4 @@ class GetUploadCredentialsTool extends AbstractRecordTool
         return round($bytes / (1024 * 1024), 1) . ' MB';
     }
 
-    /**
-     * Resolve base URL from the current HTTP request.
-     *
-     * In multi-site setups, SiteInformationService::getBaseUrl() may return the
-     * wrong domain (first site with absolute URL). This method uses the actual
-     * request host instead, which matches what the MCP client connected to.
-     */
-    private function resolveBaseUrlFromRequest(): ?string
-    {
-        $request = $GLOBALS['TYPO3_REQUEST'] ?? null;
-        if ($request === null) {
-            return null;
-        }
-
-        $uri = $request->getUri();
-        if ($uri->getHost() === '' || $uri->getHost() === 'localhost') {
-            return null;
-        }
-
-        $baseUrl = $uri->getScheme() . '://' . $uri->getHost();
-        $port = $uri->getPort();
-        if ($port !== null && $port !== 443 && $port !== 80) {
-            $baseUrl .= ':' . $port;
-        }
-
-        return $baseUrl;
-    }
 }

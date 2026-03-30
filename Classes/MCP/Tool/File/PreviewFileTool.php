@@ -6,14 +6,16 @@ namespace Hn\McpServer\MCP\Tool\File;
 
 use Hn\McpServer\Event\FilePreviewEvent;
 use Hn\McpServer\MCP\Tool\Record\AbstractRecordTool;
+use Hn\McpServer\MCP\Tool\RequestAwareToolInterface;
+use Hn\McpServer\Service\BaseUrlService;
 use Mcp\Types\CallToolResult;
 use Mcp\Types\ImageContent;
 use Mcp\Types\TextContent;
 use Psr\EventDispatcher\EventDispatcherInterface;
+use Psr\Http\Message\ServerRequestInterface;
 use TYPO3\CMS\Core\Resource\File;
 use TYPO3\CMS\Core\Resource\ProcessedFile;
 use TYPO3\CMS\Core\Resource\ResourceFactory;
-use TYPO3\CMS\Core\Site\SiteFinder;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 
 /**
@@ -26,12 +28,20 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
  * Other file types (PDFs, Office docs, etc.) can be handled by PSR-14
  * event listeners via FilePreviewEvent.
  */
-class PreviewFileTool extends AbstractRecordTool
+class PreviewFileTool extends AbstractRecordTool implements RequestAwareToolInterface
 {
     private const DEFAULT_WIDTH = 400;
     private const DEFAULT_HEIGHT = 400;
     private const MAX_WIDTH = 1200;
     private const MAX_HEIGHT = 1200;
+
+    private ?ServerRequestInterface $request = null;
+    private ?BaseUrlService $baseUrlService = null;
+
+    public function setRequest(ServerRequestInterface $request): void
+    {
+        $this->request = $request;
+    }
 
     public function getSchema(): array
     {
@@ -181,31 +191,15 @@ class PreviewFileTool extends AbstractRecordTool
 
     private function resolveBaseUrl(): string
     {
-        // Try HTTP request first (available when running via HTTP transport)
-        $request = $GLOBALS['TYPO3_REQUEST'] ?? null;
-        if ($request !== null) {
-            $uri = $request->getUri();
-            if ($uri->getHost() !== '' && $uri->getHost() !== 'localhost') {
-                $baseUrl = $uri->getScheme() . '://' . $uri->getHost();
-                $port = $uri->getPort();
-                if ($port !== null && $port !== 443 && $port !== 80) {
-                    $baseUrl .= ':' . $port;
-                }
-                return $baseUrl;
-            }
+        if ($this->baseUrlService === null) {
+            $this->baseUrlService = GeneralUtility::makeInstance(BaseUrlService::class);
         }
 
-        // Fallback for stdio transport: derive from TYPO3 site configuration
-        $siteFinder = GeneralUtility::makeInstance(SiteFinder::class);
-        $sites = $siteFinder->getAllSites();
-        foreach ($sites as $site) {
-            $base = rtrim((string)$site->getBase(), '/');
-            if (str_starts_with($base, 'http')) {
-                return $base;
-            }
+        if ($this->request !== null) {
+            return $this->baseUrlService->getBaseUrl($this->request);
         }
 
-        return '';
+        return $this->baseUrlService->getBaseUrlFromSiteConfiguration();
     }
 
     private function isPreviewableImage(string $mimeType): bool

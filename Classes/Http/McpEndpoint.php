@@ -21,6 +21,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Hn\McpServer\MCP\McpServerFactory;
 use Hn\McpServer\Service\WorkspaceContextService;
+use Hn\McpServer\Service\BaseUrlService;
 use Hn\McpServer\Service\OAuthService;
 use Hn\McpServer\Service\SiteInformationService;
 use Hn\McpServer\Http\CorsHeadersTrait;
@@ -88,8 +89,8 @@ class McpEndpoint
                 $siteInformationService->setCurrentRequest($request);
             }
 
-            // Create MCP server instance using the factory
-            $server = $serverFactory->createServer();
+            // Create MCP server instance using the factory (pass request for RequestAwareToolInterface)
+            $server = $serverFactory->createServer(null, $request);
 
             // Configure HTTP options
             $httpOptions = [
@@ -210,11 +211,9 @@ class McpEndpoint
         // Build WWW-Authenticate header with resource_metadata URL (RFC 9728)
         $wwwAuth = 'Bearer';
         if ($request !== null) {
-            $uri = $request->getUri();
-            $baseUrl = $uri->getScheme() . '://' . $uri->getHost();
-            if ($uri->getPort() && $uri->getPort() !== 443 && $uri->getPort() !== 80) {
-                $baseUrl .= ':' . $uri->getPort();
-            }
+            $container = GeneralUtility::getContainer();
+            $baseUrlService = $container->get(BaseUrlService::class);
+            $baseUrl = $baseUrlService->getBaseUrl($request);
             $resourceMetadataUrl = $baseUrl . '/.well-known/oauth-protected-resource/mcp';
             $wwwAuth = 'Bearer resource_metadata="' . $resourceMetadataUrl . '"';
         }
