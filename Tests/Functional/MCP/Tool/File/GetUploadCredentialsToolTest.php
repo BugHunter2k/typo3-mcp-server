@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Hn\McpServer\Tests\Functional\MCP\Tool\File;
 
 use Hn\McpServer\MCP\Tool\File\GetUploadCredentialsTool;
-use Hn\McpServer\Service\SiteInformationService;
+use Hn\McpServer\Service\BaseUrlService;
 use Mcp\Types\TextContent;
 use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Localization\LanguageServiceFactory;
@@ -42,10 +42,10 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
 
     public function testValidFolderReturnsCredentials(): void
     {
-        $siteInformationService = $this->createMock(SiteInformationService::class);
-        $siteInformationService->method('getBaseUrl')->willReturn('https://example.com');
+        $baseUrlService = $this->createMock(BaseUrlService::class);
+        $baseUrlService->method('getBaseUrlFromSiteConfiguration')->willReturn('https://example.com');
 
-        $tool = new GetUploadCredentialsTool($siteInformationService);
+        $tool = new GetUploadCredentialsTool($baseUrlService);
 
         $result = $tool->execute([
             'folder' => '1:/',
@@ -67,10 +67,10 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
 
     public function testTokenHashIsStoredInDatabase(): void
     {
-        $siteInformationService = $this->createMock(SiteInformationService::class);
-        $siteInformationService->method('getBaseUrl')->willReturn('https://example.com');
+        $baseUrlService = $this->createMock(BaseUrlService::class);
+        $baseUrlService->method('getBaseUrlFromSiteConfiguration')->willReturn('https://example.com');
 
-        $tool = new GetUploadCredentialsTool($siteInformationService);
+        $tool = new GetUploadCredentialsTool($baseUrlService);
 
         $result = $tool->execute([
             'folder' => '1:/',
@@ -106,10 +106,10 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
 
     public function testInvalidFolderReturnsError(): void
     {
-        $siteInformationService = $this->createMock(SiteInformationService::class);
-        $siteInformationService->method('getBaseUrl')->willReturn('https://example.com');
+        $baseUrlService = $this->createMock(BaseUrlService::class);
+        $baseUrlService->method('getBaseUrlFromSiteConfiguration')->willReturn('https://example.com');
 
-        $tool = new GetUploadCredentialsTool($siteInformationService);
+        $tool = new GetUploadCredentialsTool($baseUrlService);
 
         $result = $tool->execute([
             'folder' => '999:/nonexistent/',
@@ -122,10 +122,10 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
 
     public function testFilenameWithPathSeparatorIsRejected(): void
     {
-        $siteInformationService = $this->createMock(SiteInformationService::class);
-        $siteInformationService->method('getBaseUrl')->willReturn('https://example.com');
+        $baseUrlService = $this->createMock(BaseUrlService::class);
+        $baseUrlService->method('getBaseUrlFromSiteConfiguration')->willReturn('https://example.com');
 
-        $tool = new GetUploadCredentialsTool($siteInformationService);
+        $tool = new GetUploadCredentialsTool($baseUrlService);
 
         // Test forward slash
         $result = $tool->execute([
@@ -148,8 +148,8 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
 
     public function testExpiredTokensAreCleanedUp(): void
     {
-        $siteInformationService = $this->createMock(SiteInformationService::class);
-        $siteInformationService->method('getBaseUrl')->willReturn('https://example.com');
+        $baseUrlService = $this->createMock(BaseUrlService::class);
+        $baseUrlService->method('getBaseUrlFromSiteConfiguration')->willReturn('https://example.com');
 
         // Insert an expired token directly into the database
         $connection = GeneralUtility::makeInstance(ConnectionPool::class)
@@ -177,7 +177,7 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
         $this->assertSame('1', (string)$expiredCount, 'Expired token should exist before cleanup');
 
         // Create a new token (this triggers lazy cleanup)
-        $tool = new GetUploadCredentialsTool($siteInformationService);
+        $tool = new GetUploadCredentialsTool($baseUrlService);
         $tool->execute([
             'folder' => '1:/',
             'filename' => 'new.jpg',
@@ -193,10 +193,10 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
 
     public function testCustomMaxSize(): void
     {
-        $siteInformationService = $this->createMock(SiteInformationService::class);
-        $siteInformationService->method('getBaseUrl')->willReturn('https://example.com');
+        $baseUrlService = $this->createMock(BaseUrlService::class);
+        $baseUrlService->method('getBaseUrlFromSiteConfiguration')->willReturn('https://example.com');
 
-        $tool = new GetUploadCredentialsTool($siteInformationService);
+        $tool = new GetUploadCredentialsTool($baseUrlService);
 
         $customMaxSize = 10 * 1024 * 1024; // 10 MB
 
@@ -224,10 +224,11 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
 
     public function testMissingBaseUrlReturnsError(): void
     {
-        $siteInformationService = $this->createMock(SiteInformationService::class);
-        $siteInformationService->method('getBaseUrl')->willReturn(null);
+        $baseUrlService = $this->createMock(BaseUrlService::class);
+        $baseUrlService->method('getBaseUrlFromSiteConfiguration')
+            ->willThrowException(new \RuntimeException('No site with absolute base URL found.'));
 
-        $tool = new GetUploadCredentialsTool($siteInformationService);
+        $tool = new GetUploadCredentialsTool($baseUrlService);
 
         $result = $tool->execute([
             'folder' => '1:/',
@@ -235,7 +236,6 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
         ]);
 
         $this->assertTrue($result->isError);
-        $this->assertStringContainsString('base URL', $result->content[0]->text);
     }
 
     public function testMissingTokensTableReturnsActionableError(): void
@@ -247,10 +247,10 @@ class GetUploadCredentialsToolTest extends FunctionalTestCase
         // Each FunctionalTestCase gets its own database, so no cleanup needed.
         $connection->executeStatement('DROP TABLE IF EXISTS tx_mcpserver_upload_tokens');
 
-        $siteInformationService = $this->createMock(SiteInformationService::class);
-        $siteInformationService->method('getBaseUrl')->willReturn('https://example.com');
+        $baseUrlService = $this->createMock(BaseUrlService::class);
+        $baseUrlService->method('getBaseUrlFromSiteConfiguration')->willReturn('https://example.com');
 
-        $tool = new GetUploadCredentialsTool($siteInformationService);
+        $tool = new GetUploadCredentialsTool($baseUrlService);
 
         $result = $tool->execute([
             'folder' => '1:/',

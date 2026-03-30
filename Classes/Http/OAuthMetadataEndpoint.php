@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\Http;
 
+use Hn\McpServer\Service\BaseUrlService;
 use Hn\McpServer\Service\OAuthService;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -18,6 +19,10 @@ class OAuthMetadataEndpoint
 {
     use CorsHeadersTrait;
 
+    public function __construct(
+        private readonly BaseUrlService $baseUrlService,
+    ) {}
+
     public function __invoke(ServerRequestInterface $request): ResponseInterface
     {
         // Handle preflight OPTIONS request
@@ -26,17 +31,7 @@ class OAuthMetadataEndpoint
         }
 
         try {
-            // Get base URL from request
-            $uri = $request->getUri();
-            $baseUrl = $uri->getScheme() . '://' . $uri->getHost();
-            if ($uri->getPort() && !in_array($uri->getPort(), [80, 443])) {
-                $baseUrl .= ':' . $uri->getPort();
-            }
-
-            // Override base URL for development if needed
-            if (isset($GLOBALS['TYPO3_CONF_VARS']['SYS']['reverseProxyBaseUrl'])) {
-                $baseUrl = rtrim($GLOBALS['TYPO3_CONF_VARS']['SYS']['reverseProxyBaseUrl'], '/');
-            }
+            $baseUrl = $this->baseUrlService->getBaseUrl($request);
 
             $oauthService = GeneralUtility::makeInstance(OAuthService::class);
             $metadata = $oauthService->getMetadata($baseUrl);

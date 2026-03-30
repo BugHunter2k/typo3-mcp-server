@@ -15,6 +15,7 @@ use TYPO3\CMS\Core\Page\PageRenderer;
 use TYPO3\CMS\Core\Http\JsonResponse;
 use TYPO3\CMS\Core\Http\HtmlResponse;
 use Hn\McpServer\MCP\ToolRegistry;
+use Hn\McpServer\Service\BaseUrlService;
 use Hn\McpServer\Service\OAuthService;
 use Hn\McpServer\Service\WorkspaceContextService;
 
@@ -29,7 +30,8 @@ class McpServerModuleController
         private readonly PageRenderer $pageRenderer,
         private readonly OAuthService $oauthService,
         private readonly WorkspaceContextService $workspaceContextService,
-        private readonly UriBuilder $uriBuilder
+        private readonly UriBuilder $uriBuilder,
+        private readonly BaseUrlService $baseUrlService,
     ) {}
 
     public function mainAction(ServerRequestInterface $request): ResponseInterface
@@ -203,22 +205,7 @@ class McpServerModuleController
     
     private function getBaseUrl(ServerRequestInterface $request): string
     {
-        // Try to get from TYPO3 configuration first
-        $baseUrl = $GLOBALS['TYPO3_CONF_VARS']['SYS']['reverseProxyBaseUrl'] ?? '';
-        
-        if (empty($baseUrl)) {
-            // Fallback to request-based detection
-            $scheme = $request->getUri()->getScheme();
-            $host = $request->getUri()->getHost();
-            $port = $request->getUri()->getPort();
-            
-            $baseUrl = $scheme . '://' . $host;
-            if ($port && !in_array($port, [80, 443])) {
-                $baseUrl .= ':' . $port;
-            }
-        }
-        
-        return rtrim($baseUrl, '/');
+        return $this->baseUrlService->getBaseUrl($request);
     }
     
     

@@ -1,0 +1,2 @@
+# cat=site; type=int; label=Site Root Page ID:Root page ID of the TYPO3 site this MCP server is responsible for. Determines which domains are allowed and which base URL is used for CLI/OAuth. Set to 0 to allow all configured sites (no domain validation).
+siteRootPageId = 0
