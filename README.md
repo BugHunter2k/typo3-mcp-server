@@ -55,6 +55,49 @@ composer require hn/typo3-mcp-server
 - TYPO3 v13.4+
 - TYPO3 Workspaces extension (automatically installed as dependency)
 
+## Workspace Permissions Setup
+
+The MCP server operates in workspace context. Backend users need specific permissions to create content via MCP and publish workspace changes.
+
+### Recommended: Dedicated Backend User Group
+
+Create a backend user group with workspace permissions:
+
+1. **System > Backend User Groups > Create new group**
+2. Title: `LIB: Workspace MCP`
+3. Tab **"Access Lists"**:
+   - **Modules**: Enable `Workspaces` (under "Web")
+4. Tab **"Options"**:
+   - **"Edit in LIVE workspace"**: Check this box
+5. Save
+
+### Workspace Configuration
+
+1. Open the target workspace under **System > Workspaces**
+2. Tab **"Members"**:
+   - Add the group as **Member** (not Owner — Member permissions are sufficient for publishing)
+3. Tab **"Publishing"**:
+   - **"Restrict publishing to workspace owners only"**: Must be **disabled** (otherwise Members cannot publish)
+4. Save
+
+### Assigning Users
+
+1. Open the backend user record
+2. Add the workspace group to their user groups
+3. Ensure the user also has content editing groups (e.g. content element access, page tree mount points)
+4. Save
+
+### Permission Matrix
+
+| Permission | Setting | Configuration Location |
+|---|---|---|
+| Access workspace module | `groupMods: workspaces_admin` | User group > Access Lists > Modules |
+| Edit in live workspace | `workspace_perms: 1` | User group > Options > Checkbox |
+| Join workspace | Group listed as member | sys_workspace > Members |
+| Publish changes | Member + live access + no owner-lock | Combination of group + workspace settings |
+
+> **Why is "Edit in LIVE workspace" required?** The TYPO3 `WorkspacePublishGate` requires live workspace access for Members to publish. Without it, users can work in the workspace but cannot publish their changes. Workspace Owners (listed in `adminusers`) can always publish regardless of this setting.
+
 ## Usage
 
 ### Quick Start
