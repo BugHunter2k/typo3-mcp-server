@@ -75,10 +75,10 @@ Create a backend user group with workspace permissions:
 
 1. Open the target workspace under **System > Workspaces**
 2. Tab **"Members"**:
-   - Add the group as **Member** (not Owner — Member permissions are sufficient for publishing)
-3. Tab **"Publishing"**:
-   - **"Restrict publishing to workspace owners only"**: Must be **disabled** (otherwise Members cannot publish)
-4. Save
+   - Add the group as **Owner** (`adminusers` field)
+3. Save
+
+> **Why Owner, not Member?** TYPO3's `BackendUserAuthentication::workspaceCheckStageForCurrent()` hard-codes that only Owners (and Admins) can advance records past the Edit stage (stage 0). Members cannot move records to "Ready to Publish" (stage -10) or publish them (stage -20), regardless of the `publish_access` setting. The "Restrict publishing to workspace owners" checkbox only controls the final Execute stage via `WorkspacePublishGate` — it does **not** unlock stage -10 for Members. See [Workspace Transparency — Owner vs Member](Documentation/Architecture/WorkspaceTransparency.md#workspace-permissions-owner-vs-member) for the full permission matrix.
 
 ### Assigning Users
 
@@ -93,10 +93,10 @@ Create a backend user group with workspace permissions:
 |---|---|---|
 | Access workspace module | `groupMods: workspaces_admin` | User group > Access Lists > Modules |
 | Edit in live workspace | `workspace_perms: 1` | User group > Options > Checkbox |
-| Join workspace | Group listed as member | sys_workspace > Members |
-| Publish changes | Member + live access + no owner-lock | Combination of group + workspace settings |
+| Join workspace + publish | Group listed as **Owner** | sys_workspace > Members > Owners field |
+| Advance stages & publish | Owner role (hard-coded in Core) | Automatic for Owners, blocked for Members |
 
-> **Why is "Edit in LIVE workspace" required?** The TYPO3 `WorkspacePublishGate` requires live workspace access for Members to publish. Without it, users can work in the workspace but cannot publish their changes. Workspace Owners (listed in `adminusers`) can always publish regardless of this setting.
+> **Why is "Edit in LIVE workspace" required?** The TYPO3 `WorkspacePublishGate` additionally checks live workspace access for the Execute stage (-20). Without it, even Owners cannot perform the final publish step.
 
 ## Usage
 

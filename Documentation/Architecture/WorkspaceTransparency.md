@@ -110,6 +110,59 @@ This didn't meet our needs because:
 3. **No Post-Processing**: Results are correct without additional steps
 4. **Performance**: Fewer records fetched when deletions are involved
 
+## Workspace Permissions: Owner vs Member
+
+When configuring `sys_workspace` records for use with the MCP server, the distinction between
+**Owner** (`adminusers`) and **Member** (`members`) is critical for stage transitions.
+
+### TYPO3 Core Stage Permission Matrix
+
+Without custom stages, TYPO3's `BackendUserAuthentication::workspaceCheckStageForCurrent()`
+enforces these hard-coded rules (see `typo3/cms-core`, line ~844):
+
+| Role     | Stage 0 (Edit) | Stage -10 (Ready to Publish) | Stage -20 (Publish/Swap) |
+|----------|:-:|:-:|:-:|
+| Member   | Yes | **No** | **No** |
+| Owner    | Yes | Yes | Yes |
+| Admin    | Yes | Yes | Yes |
+
+The relevant code path:
+
+```php
+// BackendUserAuthentication::workspaceCheckStageForCurrent()
+} elseif ($stage === -10 || $stage === -20) {
+    // Nobody is allowed to do that except the owner (checked above)
+    return false;
+}
+```
+
+### Implications
+
+- **Members can only edit** (stage 0). They cannot move records to "Ready to Publish" or publish.
+- The `publish_access` bitmask (`PUBLISH_ACCESS_ONLY_WORKSPACE_OWNERS = 2`) only controls the
+  Execute stage (-20) via `WorkspacePublishGate`. It does **not** affect stage -10 permissions.
+- The checkbox "Restrict publishing to workspace owners" is therefore misleading: even when
+  disabled, members still cannot advance records past the Edit stage.
+
+### Required Configuration
+
+For backend user groups that need to publish content via the workspace preview, the group
+must be added to the **Owner** field (`adminusers`), not the Member field (`members`).
+
+Example for the MCP workspace:
+
+```
+adminusers: be_users_9,be_groups_25   -- group 25 = "LIB: Workspace MCP"
+members:                                -- (empty, owners already have full access)
+```
+
+### Alternative: Custom Stages
+
+Custom stages (`sys_workspace_stage`) allow fine-grained control via `responsible_persons`.
+Members assigned as responsible persons for a custom stage can transition records through
+that stage. This is the only way to grant stage transition rights to members without
+making them owners.
+
 ## Limitations and Considerations
 
 1. **TYPO3 Compatibility**: Our approach diverges from standard TYPO3 patterns, which may affect integration with other extensions
