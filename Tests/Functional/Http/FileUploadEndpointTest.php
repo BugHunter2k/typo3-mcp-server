@@ -287,7 +287,8 @@ class FileUploadEndpointTest extends FunctionalTestCase
 
     public function testOptionsRequestReturnsCorHeaders(): void
     {
-        $request = new ServerRequest('https://example.com/mcp/upload', 'OPTIONS');
+        $request = (new ServerRequest('https://example.com/mcp/upload', 'OPTIONS'))
+            ->withHeader('Origin', 'https://client.example.com');
 
         $endpoint = new FileUploadEndpoint();
         $response = $endpoint($request);

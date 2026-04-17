@@ -47,13 +47,13 @@ class FileUploadEndpoint
 
         // Only POST allowed
         if ($request->getMethod() !== 'POST') {
-            return $this->jsonError('Method not allowed. Use POST.', 405);
+            return $this->jsonError('Method not allowed. Use POST.', 405, $request);
         }
 
         // Extract Bearer token
         $token = $this->extractBearerToken($request);
         if ($token === null) {
-            return $this->jsonError('Missing Authorization header. Use: Authorization: Bearer {token}', 401);
+            return $this->jsonError('Missing Authorization header. Use: Authorization: Bearer {token}', 401, $request);
         }
 
         // Hash token for lookup
@@ -62,13 +62,13 @@ class FileUploadEndpoint
         // Atomic token consumption
         $tokenData = $this->consumeToken($tokenHash);
         if ($tokenData === null) {
-            return $this->jsonError('Invalid, expired, or already used token.', 401);
+            return $this->jsonError('Invalid, expired, or already used token.', 401, $request);
         }
 
         // Validate BE user is still active
         $beUserUid = (int)$tokenData['be_user_uid'];
         if (!$this->isUserActive($beUserUid)) {
-            return $this->jsonError('User account is disabled or deleted.', 403);
+            return $this->jsonError('User account is disabled or deleted.', 403, $request);
         }
 
         // Set up BE user context
@@ -97,20 +97,20 @@ class FileUploadEndpoint
                 'File too large. Content-Length: %d bytes exceeds max: %d bytes.',
                 (int)$contentLength,
                 $maxSize
-            ), 413);
+            ), 413, $request);
         }
 
         // Get uploaded file
         $uploadedFiles = $request->getUploadedFiles();
         $uploadedFile = $uploadedFiles['file'] ?? null;
         if (!$uploadedFile instanceof UploadedFileInterface) {
-            return $this->jsonError('Missing "file" field in form data. Use: curl -F "file=@path"', 400);
+            return $this->jsonError('Missing "file" field in form data. Use: curl -F "file=@path"', 400, $request);
         }
 
         // Check PHP upload errors (D11: handle UPLOAD_ERR_INI_SIZE etc)
         $uploadError = $uploadedFile->getError();
         if ($uploadError !== UPLOAD_ERR_OK) {
-            return $this->handleUploadError($uploadError);
+            return $this->handleUploadError($uploadError, $request);
         }
 
         // Check actual file size (for chunked encoding where Content-Length was absent)
@@ -120,7 +120,7 @@ class FileUploadEndpoint
                 'File too large: %d bytes (max: %d bytes).',
                 $actualSize,
                 $maxSize
-            ), 413);
+            ), 413, $request);
         }
 
         // Resolve folder and check permissions
@@ -128,12 +128,12 @@ class FileUploadEndpoint
         try {
             $folderObject = $resourceFactory->getFolderObjectFromCombinedIdentifier($folder);
         } catch (\Exception $e) {
-            return $this->jsonError('Target folder no longer exists: ' . $e->getMessage(), 400);
+            return $this->jsonError('Target folder no longer exists: ' . $e->getMessage(), 400, $request);
         }
 
         // Re-check write permission (may have changed since token creation)
         if (!$folderObject->checkActionPermission('write')) {
-            return $this->jsonError('Write permission revoked for folder.', 403);
+            return $this->jsonError('Write permission revoked for folder.', 403, $request);
         }
 
         $storage = $folderObject->getStorage();
@@ -146,7 +146,7 @@ class FileUploadEndpoint
                 'File type ".%s" not allowed. Allowed: %s',
                 $extension,
                 implode(', ', $allowedExtensions)
-            ), 415);
+            ), 415, $request);
         }
 
         // MIME-type validation (D9: defense in depth)
@@ -156,7 +156,7 @@ class FileUploadEndpoint
                 'MIME type mismatch. File extension is ".%s" but content is "%s".',
                 $extension,
                 $detectedMimeType
-            ), 415);
+            ), 415, $request);
         }
 
         // SVG sanitization
@@ -174,16 +174,16 @@ class FileUploadEndpoint
                 return $this->jsonError(sprintf(
                     'File "%s" already exists in folder. Upload cancelled.',
                     $filename
-                ), 409);
+                ), 409, $request);
             }
 
             // Upload to FAL (D4: use addFile for temp file, not addUploadedFile)
             // addUploadedFile expects UploadedFileInterface which we've already moved
             $file = $storage->addFile($tempPath, $folderObject, $filename, DuplicationBehavior::CANCEL);
         } catch (\TYPO3\CMS\Core\Resource\Exception\ExistingTargetFileNameException $e) {
-            return $this->jsonError('File already exists: ' . $e->getMessage(), 409);
+            return $this->jsonError('File already exists: ' . $e->getMessage(), 409, $request);
         } catch (\Exception $e) {
-            return $this->jsonError('Upload failed: ' . $e->getMessage(), 500);
+            return $this->jsonError('Upload failed: ' . $e->getMessage(), 500, $request);
         } finally {
             if (file_exists($tempPath)) {
                 @unlink($tempPath);
@@ -219,7 +219,7 @@ class FileUploadEndpoint
             ],
         ];
 
-        return $this->jsonSuccess($responseData);
+        return $this->jsonSuccess($responseData, $request);
     }
 
     /**
@@ -344,7 +344,7 @@ class FileUploadEndpoint
     /**
      * Handle PHP upload errors with user-friendly messages
      */
-    private function handleUploadError(int $errorCode): ResponseInterface
+    private function handleUploadError(int $errorCode, ServerRequestInterface $request): ResponseInterface
     {
         $message = match ($errorCode) {
             UPLOAD_ERR_INI_SIZE => 'File exceeds PHP upload_max_filesize limit. Check server configuration.',
@@ -363,7 +363,7 @@ class FileUploadEndpoint
             default => 400,
         };
 
-        return $this->jsonError($message, $statusCode);
+        return $this->jsonError($message, $statusCode, $request);
     }
 
     /**
@@ -452,10 +452,7 @@ class FileUploadEndpoint
         // during the actual file processing.
     }
 
-    /**
-     * Return JSON success response
-     */
-    private function jsonSuccess(array $data): ResponseInterface
+    private function jsonSuccess(array $data, ServerRequestInterface $request): ResponseInterface
     {
         $stream = new Stream('php://temp', 'rw');
         $stream->write(json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
@@ -465,10 +462,7 @@ class FileUploadEndpoint
         return $this->addCorsHeaders($response, $request);
     }
 
-    /**
-     * Return JSON error response
-     */
-    private function jsonError(string $message, int $status): ResponseInterface
+    private function jsonError(string $message, int $status, ServerRequestInterface $request): ResponseInterface
     {
         $stream = new Stream('php://temp', 'rw');
         $stream->write(json_encode([
