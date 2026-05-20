@@ -18,6 +18,22 @@ jobs:
 
     name: PHP ${{ matrix.php-version }}
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - typo3-version: '^13.4'
+            php-version: '8.3'
+            name: 'TYPO3 13 / PHP 8.3'
+          - typo3-version: '^14.0'
+            php-version: '8.3'
+            name: 'TYPO3 14 / PHP 8.3'
+          - typo3-version: '^14.0'
+            php-version: '8.4'
+            name: 'TYPO3 14 / PHP 8.4'
+
+    name: ${{ matrix.name }}
+
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -30,7 +46,13 @@ jobs:
           coverage: none
 
       - name: Install Composer dependencies
-        run: composer install --no-interaction --prefer-dist
+        run: |
+          composer require --no-interaction --no-update \
+            "typo3/cms-core:${{ matrix.typo3-version }}" \
+            "typo3/cms-backend:${{ matrix.typo3-version }}" \
+            "typo3/cms-workspaces:${{ matrix.typo3-version }}" \
+            "typo3/cms-install:${{ matrix.typo3-version }}"
+          composer update --no-interaction --prefer-dist
 
       - name: Run functional test suite
         run: composer test
