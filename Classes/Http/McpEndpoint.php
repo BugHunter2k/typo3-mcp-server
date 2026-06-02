@@ -39,6 +39,13 @@ class McpEndpoint
     public function __invoke(ServerRequestInterface $request): ResponseInterface
     {
         try {
+            // Handle CORS preflight before any auth check - browsers send OPTIONS
+            // without credentials/tokens, so returning 401 here breaks every
+            // cross-origin POST from the MCP Inspector or other browser clients.
+            if ($request->getMethod() === 'OPTIONS') {
+                return $this->handlePreflightRequest($request);
+            }
+
             // Get services through DI container
             $container = GeneralUtility::getContainer();
             $serverFactory = $container->get(McpServerFactory::class);
