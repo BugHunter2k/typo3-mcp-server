@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace Hn\McpServer\Tests\Functional\Fixtures\Builders;
 
 use TYPO3\CMS\Core\Database\ConnectionPool;
-use TYPO3\CMS\Core\Information\Typo3Version;
-use TYPO3\CMS\Core\Utility\GeneralUtility;
 
 /**
  * Builder for creating workspace records in tests
@@ -14,7 +12,7 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
 class WorkspaceBuilder
 {
     private ConnectionPool $connectionPool;
-
+    
     private array $data = [
         'pid' => 0,
         'title' => 'Test Workspace',
@@ -102,18 +100,6 @@ class WorkspaceBuilder
     }
     
     /**
-     * Freeze workspace (TYPO3 13 only, removed in v14)
-     */
-    public function frozen(): self
-    {
-        $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
-        if ($typo3Version->getMajorVersion() < 14) {
-            $this->data['freeze'] = 1;
-        }
-        return $this;
-    }
-    
-    /**
      * Set publish time
      */
     public function withPublishTime(int $timestamp): self
@@ -157,16 +143,10 @@ class WorkspaceBuilder
         // Set timestamps
         $this->data['tstamp'] = time();
         $this->data['crdate'] = time();
-
-        // 'freeze' column was removed in TYPO3 14 (#107323)
-        $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
-        if ($typo3Version->getMajorVersion() < 14 && !isset($this->data['freeze'])) {
-            $this->data['freeze'] = 0;
-        }
-
+        
         $connection = $this->connectionPool->getConnectionForTable('sys_workspace');
         $connection->insert('sys_workspace', $this->data);
-
+        
         return (int)$connection->lastInsertId();
     }
 }

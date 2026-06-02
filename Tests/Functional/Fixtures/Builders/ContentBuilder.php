@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace Hn\McpServer\Tests\Functional\Fixtures\Builders;
 
 use TYPO3\CMS\Core\Database\ConnectionPool;
-use TYPO3\CMS\Core\Information\Typo3Version;
-use TYPO3\CMS\Core\Utility\GeneralUtility;
 
 /**
  * Builder for creating content element records in tests
@@ -104,22 +102,20 @@ class ContentBuilder
     }
     
     /**
-     * Set as plugin type.
-     * In TYPO3 14+, plugins have their own CType (e.g., 'news_pi1').
-     * In TYPO3 13, plugins use CType='list' with list_type field.
+     * Set as plugin content element. TYPO3 13 stores plugins as
+     * `CType=list, list_type=<plugin>`; TYPO3 14 dropped the `list` CType
+     * altogether and stores plugins via their own CType. We pick the right
+     * shape for the running TYPO3.
      */
-    public function asPlugin(string $listType, string $header = ''): self
+    public function asPlugin(string $pluginIdentifier, string $header = ''): self
     {
-        $this->data['header'] = $header ?: $listType;
-        $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
-        if ($typo3Version->getMajorVersion() >= 14) {
-            // In TYPO3 14+, each plugin has its own CType
-            $this->data['CType'] = $listType;
-        } else {
-            // In TYPO3 13, plugins use the generic 'list' CType with a list_type selector
+        if (\Hn\McpServer\Service\TableAccessService::hasPluginSubtypes()) {
             $this->data['CType'] = 'list';
-            $this->with('list_type', $listType);
+            $this->data['list_type'] = $pluginIdentifier;
+        } else {
+            $this->data['CType'] = $pluginIdentifier;
         }
+        $this->data['header'] = $header ?: $pluginIdentifier;
         return $this;
     }
     

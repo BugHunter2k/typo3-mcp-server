@@ -91,18 +91,7 @@ class FileReferenceWriteTest extends AbstractFunctionalTest
      */
     public function testCreateContentWithMultipleFileReferences(): void
     {
-        // Create additional sys_file records
-        $connection = $this->getConnectionForTable('sys_file');
-        $connection->insert('sys_file', [
-            'uid' => 2,
-            'pid' => 0,
-            'name' => 'test2.jpg',
-            'identifier' => '/test2.jpg',
-            'storage' => 1,
-            'type' => 2,
-            'size' => 654321,
-        ]);
-
+        // sys_file uids 1 and 2 are provided by Fixtures/sys_file.csv (loaded in setUp).
         $result = $this->writeTool->execute([
             'action' => 'create',
             'table' => 'tt_content',

@@ -9,7 +9,6 @@ use TYPO3\CMS\Core\Context\Context;
 use TYPO3\CMS\Core\Context\WorkspaceAspect;
 use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\DataHandling\DataHandler;
-use TYPO3\CMS\Core\Information\Typo3Version;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Workspaces\Service\WorkspaceService;
 
@@ -170,6 +169,7 @@ class WorkspaceContextService
             $workspaceDescription = 'Automatically created workspace for Model Context Protocol operations';
             
             // Create workspace record data
+            // Only use fields that are guaranteed to exist in TYPO3 core
             $workspaceData = [
                 'pid' => 0, // Workspaces are created at root level
                 'title' => $workspaceTitle,
@@ -184,29 +184,29 @@ class WorkspaceContextService
                 'publish_time' => 0, // No scheduled publishing
             ];
 
-            // 'freeze' column was removed in TYPO3 14 (#107323)
-            $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
-            if ($typo3Version->getMajorVersion() < 14) {
-                $workspaceData['freeze'] = 0;
+            // TYPO3 14 removed DataHandler::$admin. Creating sys_workspace
+            // records is an admin-only operation, so briefly elevate the current
+            // BE user for the duration of the workspace creation.
+            $previousAdminFlag = $beUser->user['admin'] ?? 0;
+            $beUser->user['admin'] = 1;
+            try {
+                $dataHandler = GeneralUtility::makeInstance(DataHandler::class);
+
+                $newId = 'NEW' . uniqid();
+                $dataMap = [
+                    'sys_workspace' => [
+                        $newId => $workspaceData
+                    ]
+                ];
+
+                $dataHandler->start($dataMap, []);
+                $dataHandler->process_datamap();
+
+                $newUid = $dataHandler->substNEWwithIDs[$newId] ?? null;
+            } finally {
+                $beUser->user['admin'] = $previousAdminFlag;
             }
 
-            // Use DataHandler to create the workspace
-            $dataHandler = GeneralUtility::makeInstance(DataHandler::class);
-            $dataHandler->bypassAccessCheckForRecords = true;
-            
-            $newId = 'NEW' . uniqid();
-            $dataMap = [
-                'sys_workspace' => [
-                    $newId => $workspaceData
-                ]
-            ];
-            
-            $dataHandler->start($dataMap, []);
-            $dataHandler->process_datamap();
-            
-            // Get the UID of the newly created workspace
-            $newUid = $dataHandler->substNEWwithIDs[$newId] ?? null;
-            
             if ($newUid && !$dataHandler->errorLog) {
                 return (int)$newUid;
             }

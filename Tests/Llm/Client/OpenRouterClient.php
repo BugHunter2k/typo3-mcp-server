@@ -40,6 +40,12 @@ class OpenRouterClient implements LlmClientInterface
 
         $messages = [
             [
+                'role' => 'system',
+                'content' => 'You are a TYPO3 CMS content management assistant with access to MCP tools. '
+                    . 'Execute tasks directly using the available tools — do not ask for confirmation or present options. '
+                    . 'When asked to create, update, or modify content, do it immediately.',
+            ],
+            [
                 'role' => 'user',
                 'content' => $prompt,
             ],
@@ -54,6 +60,14 @@ class OpenRouterClient implements LlmClientInterface
             'messages' => $messages,
             'tools' => $this->convertToolsToOpenAIFormat($tools),
         ];
+
+        if (isset($options['reasoning'])) {
+            $requestBody['reasoning'] = $options['reasoning'];
+        }
+
+        if (isset($options['cache_control'])) {
+            $requestBody['cache_control'] = $options['cache_control'];
+        }
 
         return $this->sendRequest($requestBody);
     }
@@ -105,6 +119,14 @@ class OpenRouterClient implements LlmClientInterface
             'messages' => $this->conversationHistory,
             'tools' => $this->convertToolsToOpenAIFormat($tools),
         ];
+
+        if (isset($options['reasoning'])) {
+            $requestBody['reasoning'] = $options['reasoning'];
+        }
+
+        if (isset($options['cache_control'])) {
+            $requestBody['cache_control'] = $options['cache_control'];
+        }
 
         return $this->sendRequest($requestBody);
     }

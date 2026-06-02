@@ -14,6 +14,7 @@ use Mcp\Types\CallToolResult;
 use Psr\EventDispatcher\EventDispatcherInterface;
 use TYPO3\CMS\Backend\Utility\BackendUtility;
 use TYPO3\CMS\Core\DataHandling\DataHandler;
+use TYPO3\CMS\Core\Configuration\FlexForm\FlexFormTools;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Database\Query\Restriction\DeletedRestriction;
@@ -124,6 +125,22 @@ class WriteTableTool extends AbstractRecordTool
         $uid = isset($params['uid']) ? (int)$params['uid'] : null;
         $data = $params['data'] ?? [];
         $position = $params['position'] ?? 'bottom';
+        // Whether the caller explicitly passed a position. The 'bottom' default above
+        // is only meaningful for create/move; on update we must not reorder unless the
+        // caller asked for it (or is moving the record to another page via data.pid).
+        $positionProvided = array_key_exists('position', $params);
+
+        // The schema documents the target page as `pid` inside `data`. Older callers
+        // (and LLMs trained on prior versions) pass a top-level `pid`; fold a stray one
+        // into data so data is the single source of truth. Deriving $pid from data lets a
+        // BeforeRecordWriteEvent listener reroute a create by changing data['pid'], and
+        // lets an update move the record to another page via data['pid'].
+        if ($pid !== null && is_array($data) && !array_key_exists('pid', $data)) {
+            $data['pid'] = $pid;
+        }
+        if (is_array($data) && isset($data['pid'])) {
+            $pid = (int)$data['pid'];
+        }
 
         // Validate parameters
         if (empty($action)) {
@@ -181,8 +198,11 @@ class WriteTableTool extends AbstractRecordTool
                 if ($pid === null) {
                     throw new ValidationException(['Page ID (pid) is required for create action']);
                 }
-                
-                if (empty($data)) {
+
+                // pid now lives in data; a create still needs at least one record field
+                // beyond the target page.
+                $createFields = is_array($data) ? array_diff_key($data, ['pid' => true]) : [];
+                if (empty($createFields)) {
                     throw new ValidationException(['Data is required for create action']);
                 }
                 break;
@@ -192,7 +212,10 @@ class WriteTableTool extends AbstractRecordTool
                     throw new ValidationException(['Record UID is required for update action']);
                 }
 
-                if (empty($data) && empty($searchReplace)) {
+                // A move-only update (reorder via "position", or move to another page
+                // via data.pid) carries no field data and is still valid.
+                $movesRecord = $positionProvided || (is_array($data) && array_key_exists('pid', $data));
+                if (empty($data) && empty($searchReplace) && !$movesRecord) {
                     throw new ValidationException(['Data is required for update action']);
                 }
                 break;
@@ -242,6 +265,14 @@ class WriteTableTool extends AbstractRecordTool
         }
         $data = $beforeEvent->getData();
 
+        // A BeforeRecordWriteEvent listener may have changed data['pid'] (e.g. to reroute
+        // a create to a different page). Re-derive the create target from the post-event
+        // data and remove it so createRecord receives only record fields.
+        if ($action === 'create' && is_array($data) && array_key_exists('pid', $data)) {
+            $pid = (int)$data['pid'];
+            unset($data['pid']);
+        }
+
         // Execute the action
         switch ($action) {
             case 'create':
@@ -253,8 +284,8 @@ class WriteTableTool extends AbstractRecordTool
                     $resolvedFields = $this->resolveSearchReplace($table, $uid, $searchReplace);
                     $data = array_merge($data, $resolvedFields);
                 }
-                return $this->updateRecord($table, $uid, $data);
-                
+                return $this->updateRecord($table, $uid, $data, $positionProvided ? $position : null);
+
             case 'move':
                 return $this->moveRecord($table, $uid, $position, $pid);
 
@@ -293,7 +324,7 @@ class WriteTableTool extends AbstractRecordTool
         }
 
         // Validate the data
-        $validationResult = $this->validateRecordData($table, $data, 'create');
+        $validationResult = $this->validateRecordData($table, $data, 'create', null, $pid);
         if ($validationResult !== true) {
             return $this->createErrorResult('Validation error: ' . $validationResult);
         }
@@ -373,10 +404,22 @@ class WriteTableTool extends AbstractRecordTool
     /**
      * Update an existing record
      */
-    protected function updateRecord(string $table, int $uid, array $data): CallToolResult
+    protected function updateRecord(string $table, int $uid, array $data, ?string $position = null): CallToolResult
     {
-        // Validate the data
-        $validationResult = $this->validateRecordData($table, $data, 'update', $uid);
+        // A `pid` inside the update data is not a regular field — it requests a move to
+        // another page, routed through DataHandler's move command after the field update.
+        // Extract it before validation so the "unknown field" guard does not reject it.
+        $targetPid = null;
+        if (array_key_exists('pid', $data)) {
+            $targetPid = (int)$data['pid'];
+            unset($data['pid']);
+        }
+        $moveRequested = $targetPid !== null || $position !== null;
+
+        // Validate the data. The record's effective pid (the move target, or its current
+        // page) drives dynamic select-item resolution (e.g. colPos by backend layout).
+        $contextPid = $targetPid ?? (int)(BackendUtility::getRecord($table, $uid, 'pid')['pid'] ?? 0);
+        $validationResult = $this->validateRecordData($table, $data, 'update', $uid, $contextPid);
         if ($validationResult !== true) {
             return $this->createErrorResult('Validation error: ' . $validationResult);
         }
@@ -424,7 +467,29 @@ class WriteTableTool extends AbstractRecordTool
         if (!empty($dataHandler->errorLog)) {
             return $this->createErrorResult('Error updating record: ' . implode(', ', $dataHandler->errorLog));
         }
-        
+
+        // Move/reorder the record if requested. data.pid moves it to another page; an
+        // explicit position reorders it. With a pid but no position, the record lands at
+        // the top of the target page.
+        if ($moveRequested) {
+            $movePid = $targetPid;
+            if ($movePid === null) {
+                $currentRecord = BackendUtility::getRecord($table, $workspaceUid, 'pid');
+                $movePid = (int)($currentRecord['pid'] ?? 0);
+            }
+            // DataHandler rejects impossible moves (e.g. a page into itself). It surfaces
+            // these as errorLog entries, but a rejected move can also trip a core warning;
+            // translate either outcome into a clean "Error moving record" result.
+            try {
+                $moveError = $this->applyPosition($table, $workspaceUid, $movePid, $position ?? 'top');
+            } catch (\Throwable $moveException) {
+                $moveError = $moveException->getMessage();
+            }
+            if ($moveError !== null) {
+                return $this->createErrorResult('Error moving record: ' . $moveError);
+            }
+        }
+
         // Dispatch AfterRecordWriteEvent
         $eventDispatcher = GeneralUtility::makeInstance(EventDispatcherInterface::class);
         $eventDispatcher->dispatch(new AfterRecordWriteEvent($table, 'update', $uid, $data, null));
@@ -720,11 +785,11 @@ class WriteTableTool extends AbstractRecordTool
      * @param int|null $uid Record UID (required for update actions)
      * @return true|string True if valid, error message if invalid
      */
-    protected function validateRecordData(string $table, array &$data, string $action, ?int $uid = null)
+    protected function validateRecordData(string $table, array &$data, string $action, ?int $uid = null, ?int $pid = null)
     {
         // Table access has already been validated by ensureTableAccess() before this method is called
         // No need to re-check table existence here
-        
+
         // Special handling for uid and pid
         if (isset($data['uid'])) {
             return "Field 'uid' cannot be modified directly";
@@ -732,12 +797,49 @@ class WriteTableTool extends AbstractRecordTool
         if (isset($data['pid']) && $action !== 'create') {
             return "Field 'pid' can only be set during record creation";
         }
-        
+
+        // Build a record context for dynamic select-item resolution. TSconfig- and
+        // backend-layout-driven items (e.g. tt_content.colPos, CType disableCTypes) only
+        // resolve correctly when the target pid and sibling field values are known.
+        $recordContext = [];
+        if ($pid !== null) {
+            $recordContext['pid'] = $pid;
+        }
+        foreach ($data as $contextKey => $contextValue) {
+            if (!is_array($contextValue)) {
+                $recordContext[$contextKey] = $contextValue;
+            }
+        }
+
+        // TYPO3 control fields have no TCA columns entry but are still writable
+        // (DataHandler handles them). Allow them so the "unknown field" guard below
+        // only rejects genuine typos, not e.g. an explicit sorting value.
+        $ctrl = $GLOBALS['TCA'][$table]['ctrl'] ?? [];
+        $controlFields = array_filter([
+            'pid', 'sorting',
+            $ctrl['sortby'] ?? null,
+            $ctrl['tstamp'] ?? null,
+            $ctrl['crdate'] ?? null,
+            $ctrl['languageField'] ?? null,
+            $ctrl['transOrigPointerField'] ?? null,
+            $ctrl['translationSource'] ?? null,
+        ]);
+        foreach (($ctrl['enablecolumns'] ?? []) as $enableColumn) {
+            $controlFields[] = $enableColumn;
+        }
+
         // Validate and convert field values
         foreach ($data as $fieldName => $value) {
             $fieldConfig = $this->tableAccessService->getFieldConfig($table, $fieldName);
             if (!$fieldConfig) {
-                continue;
+                if (in_array((string)$fieldName, $controlFields, true)) {
+                    // Writable control field (sorting, language, timestamps, …) — let
+                    // DataHandler handle it; no TCA columns validation applies.
+                    continue;
+                }
+                // A field without a TCA columns entry would be silently dropped by
+                // DataHandler — reject it so typos surface instead of vanishing.
+                return "Field '{$fieldName}' does not exist in table '{$table}'";
             }
 
             // Check if field is accessible (filters out inaccessible inline relations)
@@ -746,9 +848,20 @@ class WriteTableTool extends AbstractRecordTool
             }
 
             // Validate field value
-            $validationError = $this->tableAccessService->validateFieldValue($table, $fieldName, $value);
+            $validationError = $this->tableAccessService->validateFieldValue($table, $fieldName, $value, $recordContext);
             if ($validationError !== null) {
                 return $validationError;
+            }
+
+            // Enforce TCEMAIN.table.tt_content.disableCTypes. The New Content Element
+            // Wizard reads this, but FormDataCompiler does not — so disabled content
+            // types still pass the generic select validation above and must be caught here.
+            if ($table === 'tt_content' && $fieldName === 'CType' && $pid !== null) {
+                $tsConfig = BackendUtility::getPagesTSconfig($pid);
+                $disabledCTypes = $tsConfig['TCEMAIN.']['table.']['tt_content.']['disableCTypes'] ?? '';
+                if ($disabledCTypes !== '' && in_array((string)$value, GeneralUtility::trimExplode(',', $disabledCTypes, true), true)) {
+                    return "CType '{$value}' is disabled via TCEMAIN.table.tt_content.disableCTypes and cannot be used on this page";
+                }
             }
 
             // Handle date/time fields - convert ISO 8601 to timestamp for TYPO3
@@ -935,9 +1048,11 @@ class WriteTableTool extends AbstractRecordTool
                     $existingUid = (int)$item['uid'];
                     unset($item['uid'], $item[$foreignField]);
 
-                    // If additional fields provided, add as update to dataMap
+                    // If additional fields provided, add as update to dataMap.
+                    // Run field conversions (e.g. JSON-encode imageManipulation/crop)
+                    // so patches to existing file references survive the round trip.
                     if (!empty($item)) {
-                        $dataMap[$foreignTable][$existingUid] = $item;
+                        $dataMap[$foreignTable][$existingUid] = $this->convertDataForStorage($foreignTable, $item);
                     }
 
                     $childIdentifiers[] = $existingUid;
@@ -958,6 +1073,12 @@ class WriteTableTool extends AbstractRecordTool
 
                     // Recursively handle nested inline relations in the child record
                     $nestedInlineRelations = $this->extractInlineRelations($foreignTable, $item);
+
+                    // Run field conversions on the remaining scalar fields (e.g. JSON-encode
+                    // imageManipulation/crop) so embedded children like sys_file_reference
+                    // survive the round trip with ReadTableTool.
+                    $item = $this->convertDataForStorage($foreignTable, $item);
+
                     if (!empty($nestedInlineRelations)) {
                         // Add child to dataMap first so buildInlineDataMap can reference it
                         $dataMap[$foreignTable][$childNewId] = $item;
@@ -1115,6 +1236,11 @@ class WriteTableTool extends AbstractRecordTool
                     continue;
                 }
                 if (is_array($item)) {
+                    // Patching an existing reference by uid (e.g. updating crop only) does
+                    // not need uid_local — the sys_file link is already established.
+                    if (isset($item['uid']) && is_numeric($item['uid']) && (int)$item['uid'] > 0) {
+                        continue;
+                    }
                     if (empty($item['uid_local']) || !is_numeric($item['uid_local'])) {
                         return 'File reference at index ' . $index . ' must contain uid_local (sys_file UID)';
                     }
@@ -1360,6 +1486,15 @@ class WriteTableTool extends AbstractRecordTool
                 $data[$fieldName] = '/' . trim($value, '/');
             }
 
+            // imageManipulation (e.g. sys_file_reference.crop) is stored as a JSON string.
+            // DataHandler treats the type as passthrough, so an array value gets cast to the
+            // literal string "Array" on the way to the DB. Encode here so the round trip with
+            // ReadTableTool (which json_decodes the value back into an array) is symmetric.
+            if ($fieldConfig && ($fieldConfig['config']['type'] ?? '') === 'imageManipulation' && is_array($value)) {
+                $data[$fieldName] = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                continue;
+            }
+
             // Handle FlexForm fields
             if ($this->isFlexFormField($table, $fieldName)) {
                 // If the value is already a string (XML), keep it as is
@@ -1398,11 +1533,13 @@ class WriteTableTool extends AbstractRecordTool
                         }
                     }
                     
-                    // Use TYPO3's GeneralUtility::array2xml to convert the array to XML
-                    $xml = '<?xml version="1.0" encoding="utf-8" standalone="yes" ?>' . "\n";
-                    $xml .= GeneralUtility::array2xml($flexFormData, '', 0, 'T3FlexForms');
-                    
-                    $data[$fieldName] = $xml;
+                    // Serialise via TYPO3's FlexFormTools so dotted field names land in the
+                    // `index` attribute (<field index="settings.media.maxWidth">) instead of
+                    // being collapsed into a dot-less element name by a bare array2xml. This
+                    // keeps multi-level settings (e.g. settings.media.maxWidth) intact through
+                    // the round trip and for the Extbase frontend's nested $settings tree.
+                    $flexFormTools = GeneralUtility::makeInstance(FlexFormTools::class);
+                    $data[$fieldName] = $flexFormTools->flexArray2Xml($flexFormData);
                 }
             }
         }

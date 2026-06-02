@@ -10,15 +10,17 @@ use Hn\McpServer\MCP\ToolRegistry;
 use Hn\McpServer\Service\SiteInformationService;
 use Hn\McpServer\Service\LanguageService;
 use Hn\McpServer\Service\WorkspaceContextService;
+use Hn\McpServer\Tests\Functional\Traits\PluginContentTrait;
 use Mcp\Types\TextContent;
 use Symfony\Component\Yaml\Yaml;
-use TYPO3\CMS\Core\Information\Typo3Version;
 use TYPO3\CMS\Core\Site\SiteFinder;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
 
 class GetPageToolTest extends FunctionalTestCase
 {
+    use PluginContentTrait;
+
     protected array $coreExtensionsToLoad = [
         'workspaces',
         'frontend',
@@ -37,7 +39,16 @@ class GetPageToolTest extends FunctionalTestCase
         $this->importCSVDataSet(__DIR__ . '/../../Fixtures/tt_content.csv');
         $this->importCSVDataSet(__DIR__ . '/../../Fixtures/be_users.csv');
         $this->importCSVDataSet(__DIR__ . '/../../Fixtures/sys_workspace.csv');
-        
+
+        // Plugin row whose shape depends on the running TYPO3 version
+        // (CType=list+list_type on v13, CType=plugin on v14).
+        $this->insertPluginContentElement(
+            uid: 105,
+            pid: 6,
+            pluginIdentifier: 'news_pi1',
+            extra: ['header' => 'Contact Form', 'bodytext' => 'Get in touch']
+        );
+
         // Set up backend user for DataHandler and TableAccessService
         $this->setUpBackendUser(1);
         
@@ -417,11 +428,11 @@ class GetPageToolTest extends FunctionalTestCase
         
         // Verify page information
         $this->assertStringContainsString('Title: Contact', $content);
-
-        // Verify content element on the Contact page
+        
+        // Verify plugin content element (TYPO3 14 registers plugins with
+        // their own CType directly)
         $this->assertStringContainsString('[105] Contact Form', $content);
-        // Record 105 has CType 'text' in fixtures
-        $this->assertStringContainsString('text', $content);
+        $this->assertStringContainsString('news_pi1', $content);
     }
 
     /**

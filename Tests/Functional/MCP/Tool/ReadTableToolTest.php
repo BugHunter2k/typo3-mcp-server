@@ -8,21 +8,33 @@ use Hn\McpServer\MCP\Tool\Record\ReadTableTool;
 use Hn\McpServer\Tests\Functional\AbstractFunctionalTest;
 use Hn\McpServer\Tests\Functional\Fixtures\TestDataBuilder;
 use Hn\McpServer\Tests\Functional\Traits\McpAssertionsTrait;
+use Hn\McpServer\Tests\Functional\Traits\PluginContentTrait;
 use Mcp\Types\TextContent;
 
 class ReadTableToolTest extends AbstractFunctionalTest
 {
     use McpAssertionsTrait;
-    
+    use PluginContentTrait;
+
     private ReadTableTool $tool;
     private TestDataBuilder $data;
-    
+
     protected function setUp(): void
     {
         parent::setUp();
-        
+
         $this->tool = new ReadTableTool();
         $this->data = new TestDataBuilder();
+
+        // Plugin row used by testFieldFilteringBasedOnCType. Inserted
+        // programmatically because the tt_content shape differs between
+        // TYPO3 13 (CType=list + list_type) and TYPO3 14 (CType=plugin).
+        $this->insertPluginContentElement(
+            uid: 105,
+            pid: 6,
+            pluginIdentifier: 'news_pi1',
+            extra: ['header' => 'Contact Form', 'bodytext' => 'Get in touch']
+        );
     }
 
     /**
@@ -315,21 +327,21 @@ class ReadTableToolTest extends AbstractFunctionalTest
     public function testFieldFilteringBasedOnCType(): void
     {
         $tool = new ReadTableTool();
-
+        
         // Test textmedia record (UID 100)
         $result = $tool->execute([
             'table' => 'tt_content',
             'uid' => 100,
             'includeRelations' => false
         ]);
-
+        
         $this->assertFalse($result->isError);
         $data = json_decode($result->content[0]->text, true);
         $textmediaRecord = $data['records'][0];
-
+        
         // Verify this is a textmedia record
         $this->assertEquals('textmedia', $textmediaRecord['CType']);
-
+        
         // Essential fields should always be present
         $this->assertArrayHasKey('uid', $textmediaRecord);
         $this->assertArrayHasKey('pid', $textmediaRecord);
@@ -338,11 +350,12 @@ class ReadTableToolTest extends AbstractFunctionalTest
         $this->assertArrayHasKey('sorting', $textmediaRecord);
         $this->assertArrayHasKey('tstamp', $textmediaRecord);
         $this->assertArrayHasKey('crdate', $textmediaRecord);
-
+        
         // For textmedia, bodytext should be present if it's in the showitem
         $this->assertArrayHasKey('bodytext', $textmediaRecord);
-
-        // Test second record with different CType (UID 105 is 'text')
+        
+        // Test plugin record (UID 105). The CType differs between TYPO3 13
+        // (CType=list, list_type=news_pi1) and TYPO3 14 (CType=news_pi1).
         $result = $tool->execute([
             'table' => 'tt_content',
             'uid' => 105,
@@ -351,36 +364,23 @@ class ReadTableToolTest extends AbstractFunctionalTest
 
         $this->assertFalse($result->isError);
         $data = json_decode($result->content[0]->text, true);
-        $textRecord = $data['records'][0];
+        $pluginRecord = $data['records'][0];
 
-        // Essential fields should always be present
-        $this->assertArrayHasKey('uid', $textRecord);
-        $this->assertArrayHasKey('pid', $textRecord);
-        $this->assertArrayHasKey('CType', $textRecord);
-        $this->assertArrayHasKey('header', $textRecord);
-        $this->assertArrayHasKey('sorting', $textRecord);
-        $this->assertArrayHasKey('tstamp', $textRecord);
-        $this->assertArrayHasKey('crdate', $textRecord);
+        $expectedCType = \Hn\McpServer\Service\TableAccessService::hasPluginSubtypes() ? 'list' : 'news_pi1';
+        $this->assertEquals($expectedCType, $pluginRecord['CType']);
 
-        // Field filtering analysis:
-        // Both records should return type-specific fields based on TCA configuration
-        $textmediaFields = array_keys($textmediaRecord);
-        $textFields = array_keys($textRecord);
-
-        // Both should have common essential fields
         $commonFields = ['uid', 'pid', 'CType', 'header', 'sorting', 'tstamp', 'crdate'];
         foreach ($commonFields as $field) {
-            $this->assertContains($field, $textmediaFields, "Textmedia record missing essential field: $field");
-            $this->assertContains($field, $textFields, "Text record missing essential field: $field");
+            $this->assertArrayHasKey($field, $pluginRecord, "Plugin record missing essential field: $field");
         }
 
-        // Verify that type-specific fields are present
-        $this->assertContains('bodytext', $textmediaFields, "Textmedia should have bodytext");
-        $this->assertContains('bodytext', $textFields, "Text should have bodytext");
+        $textmediaFields = array_keys($textmediaRecord);
+        $pluginFields = array_keys($pluginRecord);
 
-        // Count fields to ensure we're not getting too many unnecessary fields
+        $this->assertContains('bodytext', $textmediaFields, "Textmedia should have bodytext");
+
         $this->assertLessThan(100, count($textmediaFields), "Too many fields returned for textmedia");
-        $this->assertLessThan(100, count($textFields), "Too many fields returned for text");
+        $this->assertLessThan(100, count($pluginFields), "Too many fields returned for the plugin");
     }
 
     /**
@@ -571,5 +571,88 @@ class ReadTableToolTest extends AbstractFunctionalTest
 
         // Non-requested fields should still be excluded
         $this->assertArrayNotHasKey('colPos', $record);
+    }
+
+    /**
+     * Reading several records in a single call by passing an array of UIDs.
+     * This is the natural follow-up after seeing an inline-relation hint
+     * like `metadata: [1, 5]` on a parent record.
+     */
+    public function testReadMultipleRecordsByUidArray(): void
+    {
+        $result = $this->tool->execute([
+            'table' => 'tt_content',
+            'uid' => [100, 101],
+            'includeRelations' => false,
+        ]);
+
+        $this->assertSuccessfulToolResult($result);
+        $data = $this->extractJsonFromResult($result);
+
+        $this->assertCount(2, $data['records']);
+        $uids = array_column($data['records'], 'uid');
+        $this->assertContains(100, $uids);
+        $this->assertContains(101, $uids);
+    }
+
+    /**
+     * Single-int form keeps working alongside the array form.
+     */
+    public function testUidArrayWithSingleEntryEqualsLegacyInt(): void
+    {
+        $resultArray = $this->tool->execute([
+            'table' => 'tt_content',
+            'uid' => [100],
+            'includeRelations' => false,
+        ]);
+        $resultInt = $this->tool->execute([
+            'table' => 'tt_content',
+            'uid' => 100,
+            'includeRelations' => false,
+        ]);
+
+        $this->assertEquals(
+            $this->extractJsonFromResult($resultArray)['records'],
+            $this->extractJsonFromResult($resultInt)['records']
+        );
+    }
+
+    /**
+     * Mixed valid and invalid UIDs: invalid ones (<= 0) drop out, the rest
+     * still match.
+     */
+    public function testUidArrayDropsNonPositiveEntries(): void
+    {
+        $result = $this->tool->execute([
+            'table' => 'tt_content',
+            'uid' => [100, -1, 0, 101],
+            'includeRelations' => false,
+        ]);
+
+        $this->assertSuccessfulToolResult($result);
+        $uids = array_column(
+            $this->extractJsonFromResult($result)['records'],
+            'uid'
+        );
+        sort($uids);
+        $this->assertSame([100, 101], $uids);
+    }
+
+    /**
+     * A uid filter that sanitises to an empty list must still apply (return
+     * zero rows), preserving the legacy `uid: -1 → empty result` semantics.
+     */
+    public function testUidArrayWithOnlyInvalidEntriesReturnsEmpty(): void
+    {
+        $result = $this->tool->execute([
+            'table' => 'tt_content',
+            'uid' => [-1, 0],
+            'includeRelations' => false,
+        ]);
+
+        $this->assertSuccessfulToolResult($result);
+        $data = $this->extractJsonFromResult($result);
+        $this->assertSame(0, $data['total']);
+        $this->assertEmpty($data['records']);
     }
 }
