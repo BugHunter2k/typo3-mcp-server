@@ -152,11 +152,14 @@ class McpEndpoint
             $stream->write($output);
             $stream->rewind();
 
-            return new Response(
+            // CORS headers are required on the actual response too - browsers
+            // block reading any cross-origin response without them, even after
+            // a successful preflight.
+            return $this->addCorsHeaders(new Response(
                 $stream,
                 $statusCode,
                 ['Content-Type' => $contentType]
-            );
+            ), $request);
 
         } catch (\Throwable $e) {
             $stream = new Stream('php://temp', 'rw');
@@ -166,11 +169,11 @@ class McpEndpoint
             ]));
             $stream->rewind();
 
-            return new Response(
+            return $this->addCorsHeaders(new Response(
                 $stream,
                 500,
                 ['Content-Type' => 'application/json']
-            );
+            ), $request);
         }
     }
 
