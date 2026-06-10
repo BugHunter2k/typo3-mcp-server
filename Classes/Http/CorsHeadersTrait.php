@@ -27,7 +27,8 @@ trait CorsHeadersTrait
         return $response
             ->withHeader('Access-Control-Allow-Origin', $allowedOrigin)
             ->withHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            ->withHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+            ->withHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID')
+            ->withHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, WWW-Authenticate')
             ->withHeader('Access-Control-Allow-Credentials', 'true')
             ->withHeader('Access-Control-Max-Age', '86400');
     }
