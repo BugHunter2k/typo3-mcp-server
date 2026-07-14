@@ -55,22 +55,11 @@ services:
   Hn\McpServer\Server\SiteInstructionsService:
     public: true
 
-  # Public for runtime container lookups in McpEndpoint (WWW-Authenticate header)
-  # and GeneralUtility::makeInstance() calls in OAuthManageCommand / PreviewFileTool
+  # Public for GeneralUtility::makeInstance() calls in OAuthManageCommand / PreviewFileTool
   Hn\McpServer\Service\BaseUrlService:
     public: true
 
-  # OAuth/.well-known endpoints invoked via GeneralUtility::makeInstance() in
-  # McpServerMiddleware. They have a BaseUrlService constructor dependency, so
-  # makeInstance must resolve them through the container instead of falling back
-  # to argument-less `new`.
-  Hn\McpServer\Http\OAuthAuthServerMetadataEndpoint:
-    public: true
-  Hn\McpServer\Http\OAuthMetadataEndpoint:
-    public: true
-  Hn\McpServer\Http\OAuthResourceMetadataEndpoint:
-    public: true
-    
+
   # Event listeners
   Hn\McpServer\EventListener\FileEnrichmentListener:
     tags:

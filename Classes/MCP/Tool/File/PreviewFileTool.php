@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Hn\McpServer\MCP\Tool\File;
 
 use Hn\McpServer\Event\FilePreviewEvent;
+use Hn\McpServer\Http\RequestUrlTrait;
 use Hn\McpServer\MCP\Tool\Record\AbstractRecordTool;
 use Hn\McpServer\MCP\Tool\RequestAwareToolInterface;
 use Hn\McpServer\Service\BaseUrlService;
@@ -30,6 +31,8 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
  */
 class PreviewFileTool extends AbstractRecordTool implements RequestAwareToolInterface
 {
+    use RequestUrlTrait;
+
     private const DEFAULT_WIDTH = 400;
     private const DEFAULT_HEIGHT = 400;
     private const MAX_WIDTH = 1200;
@@ -191,12 +194,12 @@ class PreviewFileTool extends AbstractRecordTool implements RequestAwareToolInte
 
     private function resolveBaseUrl(): string
     {
-        if ($this->baseUrlService === null) {
-            $this->baseUrlService = GeneralUtility::makeInstance(BaseUrlService::class);
+        if ($this->request !== null) {
+            return $this->getRequestBaseUrl($this->request);
         }
 
-        if ($this->request !== null) {
-            return $this->baseUrlService->getBaseUrl($this->request);
+        if ($this->baseUrlService === null) {
+            $this->baseUrlService = GeneralUtility::makeInstance(BaseUrlService::class);
         }
 
         return $this->baseUrlService->getBaseUrlFromSiteConfiguration();
