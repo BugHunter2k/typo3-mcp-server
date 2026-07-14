@@ -54,7 +54,8 @@ class GetPageTool extends AbstractRecordTool
         $domainsText = $this->siteInformationService->getAvailableDomainsText();
         
         $schema = [
-            'description' => 'Get detailed information about a TYPO3 page including its records. Can fetch by page ID or URL. Shows content in the specified language when available.',
+            'description' => 'Get detailed information about a TYPO3 page including its records. Can fetch by page ID or URL. Shows content in the specified language when available. ' .
+                'Every content element lists its frontend anchor (#c<uid>, from the rendered id="c<uid>"). To link to an element — e.g. for a table of contents — use "t3://page?uid=<pageId>#c<uid>" in RTE fields like bodytext.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
@@ -631,7 +632,15 @@ class GetPageTool extends AbstractRecordTool
                 $cType = $element['CType'] ?? 'unknown';
                 $cTypeLabel = RecordFormattingUtility::getContentTypeLabel($cType);
                 $result .= "- [" . $element['uid'] . "] " . $title . " (Type: " . $cTypeLabel . " [" . $cType . "])\n";
-                
+
+                // The TYPO3 frontend renders every content element with
+                // id="c<uid>", so #c<uid> is its anchor — usable for tables
+                // of contents and RTE links (t3://page?uid=<pid>#c<uid>).
+                $result .= "  Anchor: #c" . $element['uid'] . "\n";
+                if (!empty($element['header_link'])) {
+                    $result .= "  Header Link: " . $element['header_link'] . "\n";
+                }
+
                 // Show important fields based on content type
                 switch ($cType) {
                     case 'text':

@@ -1081,6 +1081,40 @@ class WriteTableToolTest extends AbstractFunctionalTest
     }
 
     /**
+     * Test that a bodytext RTE link to a content element anchor
+     * (t3://page?uid=<pid>#c<uid>) survives the write→read round trip
+     */
+    public function testBodytextAnchorLinkRoundTrip(): void
+    {
+        $result = $this->tool->execute([
+            'action' => 'create',
+            'table' => 'tt_content',
+            'pid' => 1,
+            'data' => [
+                'CType' => 'text',
+                'header' => 'Table of contents',
+                'bodytext' => '<p><a href="t3://page?uid=1#c100">Welcome section</a></p>',
+            ],
+        ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+        $uid = json_decode($result->content[0]->text, true)['uid'];
+
+        $readTool = new ReadTableTool();
+        $result = $readTool->execute([
+            'table' => 'tt_content',
+            'uid' => $uid,
+        ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+        $record = json_decode($result->content[0]->text, true)['records'][0];
+
+        $this->assertStringContainsString(
+            't3://page?uid=1#c100',
+            $record['bodytext'],
+            'Anchor link must survive the write→read round trip'
+        );
+    }
+
+    /**
      * Test date field conversion
      */
     public function testDateFieldConversion(): void

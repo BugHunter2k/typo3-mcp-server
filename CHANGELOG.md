@@ -35,6 +35,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - FlexFormStructureService: shared DataStructure resolution (identifier- and
   record-row-based) with a field→sheet map for DS-aware writes.
+- GetPage lists the frontend anchor (`#c<uid>`) of every content element and
+  the `header_link` when set; GetPage and WriteTable document the RTE link
+  convention `t3://page?uid=<pageId>#c<uid>` so LLM clients can build tables
+  of contents.
 
 ### Removed
 
