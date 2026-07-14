@@ -193,20 +193,20 @@ Estimated: 1–1.5 days. Fixes K26 (Jessica).
   `getExampleValueForField`, `processFlexFormField` and the local
   `addFieldDetailsInline` wrapper. Acceptance: `vendor/bin/phpunit -c phpunit.xml.dist
   --filter "FlexFormSchema"` green (17 tests), no references to deleted methods.
-- [ ] `[HIGH]` Extract DS resolution into `Classes/Service/FlexFormStructureService`
+- [x] `[HIGH]` Extract DS resolution into `Classes/Service/FlexFormStructureService`
   (per D1): move `resolveDataStructure()` + `buildCandidateRows()` +
   `dataStructureHasFields()` out of `GetFlexFormSchemaTool`; the tool delegates. Add a
   method returning the field→sheet map for a record row (parsed DS sheets keyed by
   dotted field name). Acceptance: schema tool tests stay green; new service has
   functional coverage via existing + one direct test.
-- [ ] `[LOW]` Multi-sheet test fixture: neither `news_pi1` (single sheet `sDEF`, no
+- [x] `[LOW]` Multi-sheet test fixture: neither `news_pi1` (single sheet `sDEF`, no
   `persistence` field — verified in `flexform_news_list.xml`) nor any existing fixture
   covers the target scenario. Register a test-only CType in the functional test
   fixtures with a two-sheet FlexForm DS (sheet `sDEF` with `settings.*` fields, second
   sheet containing `persistence.storagePid`), following the existing fixture-extension
   pattern under `Tests/Functional/Fixtures/Extensions/`. Acceptance: GetFlexFormSchema
   lists both sheets for the fixture CType.
-- [ ] `[HIGH]` Generalize WriteTable flexform JSON→XML (`WriteTableTool.php:1516-1562`,
+- [x] `[HIGH]` Generalize WriteTable flexform JSON→XML (`WriteTableTool.php:1516-1562`,
   per D2 + D2b): **fetch-and-merge** — load the record's current flexform XML
   (workspace-resolved), overlay incoming dotted paths, serialize; dot-flatten ALL
   nested subtrees (not only `settings`); resolve the record's DS via
@@ -219,7 +219,7 @@ Estimated: 1–1.5 days. Fixes K26 (Jessica).
   index="persistence.storagePid">` in the correct sheet; (b) **partial-update test:
   write field A, then update only field B — field A survives** (guards the CRITICAL
   destructive-replace bug); (c) unknown field returns isError naming the field.
-- [ ] `[MED]` Symmetric read side (`ReadTableTool.php:588-628`): replace the
+- [x] `[MED]` Symmetric read side (`ReadTableTool.php:588-628`): replace the
   settings-only simplification with generic nesting for all dotted paths/sheets
   (`persistence.storagePid` → `{"persistence": {"storagePid": ...}}`). Decision: on
   flexform parse failure return an explicit tool error instead of the current silent
@@ -380,17 +380,85 @@ K24, K25, K26 are the drivers).
     17/17 green (81 assertions); full suite 628 tests / 0 errors / 0 failures
     (14 known baseline warnings)
   - Confidence: self-review + full-suite evidence
+- [2026-07-14 13:40] Task 1 committed as 11e4332 (user approved; CHANGELOG.md created)
+- [2026-07-14 14:00] Task: FlexFormStructureService extracted (Phase 1, Task 2)
+  - New Classes/Service/FlexFormStructureService.php: resolveDataStructure()
+    (identifier-based, moved), resolveDataStructureForRecord() (row-based, for
+    write path), getFieldSheetMap(), private resolveFromCandidates()/
+    buildCandidateRows()/dataStructureHasFields(); tool delegates
+  - IMPORTANT finding (env = TYPO3 13.4.27 + news 14.0.3): legacy-shape plugin
+    rows (CType=list, list_type=news_pi1) fall back to the DEFAULT DS in
+    FlexFormTools (ds key `*,news_pi1` never tried for legacy pointer values).
+    resolveDataStructureForRecord() therefore walks candidates: real row
+    (non-default) → synthesized rows from the row's plugin identifier → real
+    row accepting default as last resort. Task 4 MUST use this method (not
+    plain FlexFormTools) or sheet mapping breaks for exactly the records our
+    tests create via PluginContentTrait.
+  - Verification: VERIFIED by critic agent (confidence 5/5, behavior-identical
+    extraction confirmed against git show HEAD); 6 direct service tests; full
+    suite 634 tests / 0 errors / 0 failures
+- [2026-07-14 14:05] Task: Multi-sheet test fixture (Phase 1, Task 3)
+  - New fixture extension Tests/Functional/Fixtures/Extensions/test_flexform:
+    CType `test_multisheetflex`, DS sheets sDEF (settings.contacts,
+    settings.sortOrder) + persistence (persistence.storagePid)
+  - Acceptance test green: GetFlexFormSchema lists both sheets (18/18)
+  - Gotcha: stale functional-instance dirs / sqlite files from interrupted
+    parallel runs cause "Can not link extension folder" — remove the stale
+    functional-<hash> dir and rerun
+- [2026-07-14 14:35] Task: DS-aware fetch-and-merge write path (Phase 1, Task 4)
+  - convertDataForStorage() got a ?int $recordUid param (workspace UID on
+    update, null on create); all 4 call sites threaded; updateRecord resolves
+    the workspace UID BEFORE conversion now
+  - New convertFlexFormValueForStorage(): loads current record + XML, resolves
+    DS via FlexFormStructureService (row = record + pending data, pending
+    wins), flattens ALL subtrees, validates against field→sheet map (unknown →
+    ValidationException listing available fields; ambiguous → error), merges
+    current values (canonical re-sheeting heals old sDEF-only writes), keeps
+    raw-XML passthrough; new extractFlexFormValues() parses stored XML
+    (parse failure → explicit error, fix via raw-XML passthrough)
+  - Gotcha: ValidationException takes array of errors, not string
+  - 3 legacy tests adapted (wrote undeclared/legacy fields, relied on silent
+    drop): NewsFlexFormTest::testDifferentNewsPluginModes (+Complex...),
+    WriteTableToolTest::testFlexFormFieldHandling
+  - Acceptance green: sheet placement, partial-update survival (CRITICAL),
+    unknown-field error (WriteTableToolFlexFormTest, 4 tests)
+- [2026-07-14 14:45] Task: Symmetric read side (Phase 1, Task 5)
+  - ReadTableTool returns FlexFormService::convertFlexFormContentToArray()
+    directly (core API nests ALL dotted paths across sheets — the old
+    settings-only loop was legacy un-mangling for pre-fix writes and produced
+    Jessica's `persistencestoragePid`); parse failure now throws McpException
+    422 instead of silent []
+  - Tool descriptions updated: WriteTable (partial-patch semantics, nested
+    JSON example, GetFlexFormSchema pointer), ReadTable (nested output shape)
+  - K26 round-trip test green (write persistence.storagePid as JSON → read
+    back same nested JSON)
+  - Full suite: 639 tests / 0 errors / 0 failures (15 warnings = known
+    $LANG/doktype family, +1 group from new test classes)
+- [2026-07-14 15:15] Critic verification Tasks 4+5: ISSUES_FOUND (confidence
+  5/5) — both confirmed and fixed:
+  1. Read-side parse-failure catch was UNREACHABLE: FlexFormService swallows
+     xml2array's error string via `['data'] ?? []` and returns [] silently.
+     Fix: explicit xml2array() validation in ReadTableTool before conversion,
+     throw McpException 422 on error string. New regression test
+     testUnparseableStoredFlexFormReturnsReadError green.
+  2. extractFlexFormValues foreach-warning on empty sheets (xml2array parses
+     empty sheet as 'lDEF' => '' string — the 15th suite warning was OURS,
+     not baseline). Fix: is_array guard like core's FlexFormService.
+  - All other requirements: complete with evidence (14 evidence items);
+    reorder of resolveToWorkspaceUid verified side-effect-free; pre-existing
+    stale docblock in ensureL10nStateForTranslation noted (unchanged, out of
+    scope)
 
 ## Implementation Checklist
 
 ### Phase 1: FlexForm DS-aware read/write
 - [x] WIP finalized + committed (cleanups done)
-      (implemented + validated 2026-07-14; commit pending user approval)
-- [ ] FlexFormStructureService extracted
-- [ ] Multi-sheet test fixture extension registered
-- [ ] Write path generalized (fetch-and-merge, DS-aware sheets, no silent drops)
-- [ ] Partial-update survival test green (CRITICAL guard)
-- [ ] Read path symmetric + round-trip test + parse errors explicit
+      (committed 11e4332)
+- [x] FlexFormStructureService extracted
+- [x] Multi-sheet test fixture extension registered
+- [x] Write path generalized (fetch-and-merge, DS-aware sheets, no silent drops)
+- [x] Partial-update survival test green (CRITICAL guard)
+- [x] Read path symmetric + round-trip test + parse errors explicit
 - [ ] **REVIEW GATE:** suite green, human approval, merged --no-ff
 
 ### Phase 2: Domain mapping

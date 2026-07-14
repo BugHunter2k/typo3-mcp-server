@@ -5,10 +5,9 @@ declare(strict_types=1);
 namespace Hn\McpServer\MCP\Tool\Record;
 
 use Mcp\Types\CallToolResult;
-use TYPO3\CMS\Backend\Utility\BackendUtility;
-use TYPO3\CMS\Core\Configuration\FlexForm\FlexFormTools;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use Hn\McpServer\Utility\TcaFormattingUtility;
+use Hn\McpServer\Service\FlexFormStructureService;
 use Hn\McpServer\Service\TableAccessService;
 
 /**
@@ -90,15 +89,16 @@ class GetFlexFormSchemaTool extends AbstractRecordTool
         $header .= "Table: $table\n";
         $header .= "Field: $field\n\n";
 
-        // Resolve the DataStructure through TYPO3's FlexFormTools so the
-        // DataStructure identifier events run (BeforeFlexFormDataStructureIdentifierInitializedEvent
-        // / AfterFlexFormDataStructureParsedEvent). This is essential for
-        // dynamic DataStructures such as EXT:form (form_formframework): the
-        // `settings.persistenceIdentifier` select items (the list of available
-        // forms) and the per-finisher override sheets are injected at runtime
-        // and are absent from the static FlexForm XML file. Reading the raw
-        // file — as this tool did previously — would hide them from the LLM.
-        $structure = $this->resolveDataStructure($table, $field, $identifier, $recordUid);
+        // Resolve the DataStructure through FlexFormStructureService (which
+        // uses TYPO3's FlexFormTools) so the DataStructure identifier events
+        // run. This is essential for dynamic DataStructures such as EXT:form
+        // (form_formframework): the `settings.persistenceIdentifier` select
+        // items (the list of available forms) and the per-finisher override
+        // sheets are injected at runtime and are absent from the static
+        // FlexForm XML file. Reading the raw file — as this tool did
+        // previously — would hide them from the LLM.
+        $structure = GeneralUtility::makeInstance(FlexFormStructureService::class)
+            ->resolveDataStructure($table, $field, $identifier, $recordUid);
 
         if ($structure !== null) {
             $processedData = $this->processFlexFormXml($structure);
@@ -110,127 +110,6 @@ class GetFlexFormSchemaTool extends AbstractRecordTool
 
         // If we get here, the identifier could not be resolved to a DataStructure
         throw new \InvalidArgumentException("FlexForm schema not found for identifier: $identifier");
-    }
-
-    /**
-     * Resolve a FlexForm DataStructure to its normalized array form via
-     * TYPO3's FlexFormTools, running the DataStructure identifier events.
-     *
-     * Returns null when no candidate row yields a DataStructure that actually
-     * contains fields (e.g. the identifier is unknown or its extension is not
-     * installed).
-     */
-    protected function resolveDataStructure(string $table, string $field, string $identifier, ?int $recordUid): ?array
-    {
-        $fieldTca = $GLOBALS['TCA'][$table]['columns'][$field];
-        $flexFormTools = GeneralUtility::makeInstance(FlexFormTools::class);
-
-        foreach ($this->buildCandidateRows($table, $field, $identifier, $recordUid) as $candidate) {
-            try {
-                $dsIdentifier = $flexFormTools->getDataStructureIdentifier($fieldTca, $table, $field, $candidate['row']);
-            } catch (\Throwable) {
-                // Pointer fields did not match a DataStructure for this row —
-                // try the next candidate.
-                continue;
-            }
-
-            // A candidate row must resolve to a DataStructure that is specific
-            // to the requested identifier. When the pointer value does not
-            // match, FlexFormTools silently falls back to the `default` ds key
-            // (see getDataStructureIdentifierFromTcaArray) — accepting that
-            // would make every unknown identifier "resolve" to the default DS.
-            // This applies to real records too: a record whose pointer fields
-            // no longer match any ds key (e.g. legacy list_type rows after a
-            // plugin switched to CType registration) falls back to `default`,
-            // which must not shadow an explicitly requested identifier that a
-            // later synthesized candidate can resolve.
-            if (!$candidate['allowDefault']) {
-                $parsed = json_decode($dsIdentifier, true);
-                if (is_array($parsed) && ($parsed['dataStructureKey'] ?? null) === 'default') {
-                    continue;
-                }
-            }
-
-            try {
-                $structure = $flexFormTools->parseDataStructureByIdentifier($dsIdentifier);
-            } catch (\Throwable) {
-                continue;
-            }
-
-            if ($this->dataStructureHasFields($structure)) {
-                return $structure;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Build the list of record rows to try when resolving the DataStructure.
-     *
-     * FlexFormTools derives the DataStructure from a record's pointer fields
-     * (for tt_content: `list_type,CType`). Since callers pass an identifier
-     * rather than a full record, we synthesize plausible rows — or load the
-     * real record when a recordUid is supplied.
-     *
-     * Each entry is `['row' => array, 'allowDefault' => bool]`. `allowDefault`
-     * marks rows whose `default` ds resolution is legitimate — only when the
-     * caller explicitly asked for the "default" identifier.
-     *
-     * @return array<int, array{row: array<string, mixed>, allowDefault: bool}>
-     */
-    protected function buildCandidateRows(string $table, string $field, string $identifier, ?int $recordUid): array
-    {
-        $candidates = [];
-        $allowDefault = ($identifier === 'default');
-
-        // Best case: an actual record. It carries the real pointer values and,
-        // for EXT:form, the selected persistenceIdentifier — which the DS event
-        // needs to add the finisher-override sheets.
-        if ($recordUid !== null) {
-            $record = BackendUtility::getRecord($table, $recordUid);
-            if (is_array($record)) {
-                $candidates[] = ['row' => $record, 'allowDefault' => $allowDefault];
-            }
-        }
-
-        // The identifier may be a CType (TYPO3 14 / own-CType plugins such as
-        // form_formframework), a list_type (legacy plugins such as news_pi1),
-        // or a combined ds array key ("*,news_pi1", "news_pi1,list"). Combined
-        // keys follow the ds_pointerField order (tt_content: "list_type,CType");
-        // "*" is a wildcard placeholder.
-        $cType = $identifier;
-        $listType = $identifier;
-        if (str_contains($identifier, ',')) {
-            [$first, $second] = array_map('trim', explode(',', $identifier, 2));
-            if ($first !== '*' && $first !== '') {
-                $listType = $first;
-            }
-            if ($second !== '*' && $second !== '') {
-                $cType = $second;
-            }
-        }
-
-        // Candidate 1: identifier is a CType.
-        $candidates[] = ['row' => [$field => '', 'CType' => $cType, 'list_type' => ''], 'allowDefault' => $allowDefault];
-        // Candidate 2: identifier is a list_type under the generic "list" CType.
-        $candidates[] = ['row' => [$field => '', 'CType' => 'list', 'list_type' => $listType], 'allowDefault' => $allowDefault];
-
-        return $candidates;
-    }
-
-    /**
-     * Whether a parsed DataStructure declares at least one field in any sheet.
-     */
-    protected function dataStructureHasFields(array $structure): bool
-    {
-        foreach (($structure['sheets'] ?? []) as $sheet) {
-            if (!empty($sheet['ROOT']['el'])) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

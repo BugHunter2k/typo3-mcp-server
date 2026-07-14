@@ -18,6 +18,7 @@ class GetFlexFormSchemaToolTest extends FunctionalTestCase
     protected array $testExtensionsToLoad = [
         'news',  // Add News extension for success test cases
         'mcp_server',
+        '../Tests/Functional/Fixtures/Extensions/test_flexform',
     ];
 
     protected function setUp(): void
@@ -405,6 +406,30 @@ class GetFlexFormSchemaToolTest extends FunctionalTestCase
         // exist, so resolution falls back to the synthesized identifier row)
         $this->assertStringContainsString('FLEXFORM SCHEMA: news_pi1', $content);
         $this->assertStringContainsString('settings.', $content);
+    }
+
+    /**
+     * Test that a multi-sheet FlexForm with a non-`settings` subtree lists
+     * all sheets and their fields (test_flexform fixture extension)
+     */
+    public function testGetFlexFormSchemaListsAllSheetsOfMultiSheetFlexForm(): void
+    {
+        $tool = new GetFlexFormSchemaTool();
+
+        $result = $tool->execute([
+            'identifier' => 'test_multisheetflex',
+        ]);
+
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+        $content = $result->content[0]->text;
+
+        $this->assertStringContainsString('FLEXFORM SCHEMA: test_multisheetflex', $content);
+        $this->assertStringContainsString('SHEETS:', $content);
+        $this->assertStringContainsString('Sheet: sDEF', $content);
+        $this->assertStringContainsString('Sheet: persistence', $content);
+        $this->assertStringContainsString('settings.contacts', $content);
+        $this->assertStringContainsString('settings.sortOrder', $content);
+        $this->assertStringContainsString('persistence.storagePid', $content);
     }
 
 }
