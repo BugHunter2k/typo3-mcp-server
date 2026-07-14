@@ -351,6 +351,27 @@ test modified = WIP not yet committed → start with Phase 1 task 1). Memories:
 `rtk-wrapper-git-quirks`. Ticket details: `fetch-issue.py LIADEV-586` (comments K20,
 K24, K25, K26 are the drivers).
 
+- [2026-07-14 16:30] Domain schema reworked to map + patterns (Ingo's design
+  request: compact env-aware resolution instead of flat host list)
+  - Gateway (amended commit 4d255c7 on feat/domain-project-resolution):
+    x-mcp-proxy.domains is now {host: environment}, new x-mcp-proxy
+    .domainPatterns ["*.{environment}.<suffix>"] covering the regular
+    site×env matrix; resolve_domain() returns (project, environment),
+    env label validated against live routes (patterns cannot invent
+    connectors); 404 hint returns THE canonical URL; dev hosts recognized
+    via dev_routing.hostname_suffix + build_dev_url re-validation. 331
+    tests (17 new), ruff clean; specs 001/002 + CHANGELOG updated.
+  - Generator (typo3-bootstrap, branch feat/mcp-json-generator,
+    uncommitted): sweeps ALL config/sites/* folders, factors
+    <site>.<env>.<suffix> hosts into patterns, rest explicit; validated
+    against real Hörmann checkout: 65 explicit domains + 1 pattern
+    (instead of ~490 flat entries), round-trip through the REAL gateway
+    parser resolves https://de.staging1.hoermann-cloud.de/... →
+    (hoermann, staging1) incl. counter-checks.
+  - Extension docs aligned on branch docs/domains-map-schema (README);
+    gateway skill updated. mcp:domains stays the flat runtime inventory
+    for cross-checking (env semantics are generator/gateway convention).
+
 ## Time Tracking
 
 Note: progress-log timestamps between 16:40-18:10 above are sequence markers,
@@ -560,4 +581,6 @@ not wall-clock times — the session ran 13:25-15:10.
 - [ ] Live verification + German ticket comment draft
       (draft DONE 2026-07-14, shown to Ingo — posting only on explicit OK;
       live verification blocked on staging-ki prerequisite)
-- [ ] **REVIEW GATE:** human approval, merged --no-ff
+- [x] **REVIEW GATE:** human approval, merged --no-ff
+      (commit dbb38b2, merge 228f73b; integration + all 4 feature branches
+      pushed to origin by Ingo 2026-07-14 — d41b642..228f73b)
