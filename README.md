@@ -146,17 +146,10 @@ This method gives you admin privileges by default. Add this to your mcp config f
 ### Gateway Integration: Domain List
 
 When this instance sits behind an MCP routing gateway that maps incoming
-URLs to project backends via a `.mcp.json` file, list every domain the
-instance serves (site bases and all `baseVariants`, e.g. additional
-production domains) in an optional `domains` key. Generate the list with:
-
-```bash
-vendor/bin/typo3 mcp:domains
-# {"domains": ["partner.example.org", "stage.example.com", "www.example.com"]}
-```
-
-Embed the output into the gateway block (`x-mcp-proxy`) of the project's
-`.mcp.json` — that block is the only part the gateway reads:
+URLs to project backends via a `.mcp.json` file, the gateway can resolve a
+pasted site URL (any served domain, e.g. an additional production domain
+or a staging host) to the correct backend AND environment via two optional
+keys in the gateway block (`x-mcp-proxy` — the only part the gateway reads):
 
 ```json
 {
@@ -164,13 +157,29 @@ Embed the output into the gateway block (`x-mcp-proxy`) of the project's
    "x-mcp-proxy": {
       "project": "example",
       "site": "example",
-      "domains": ["partner.example.org", "stage.example.com", "www.example.com"]
+      "domains": {
+         "www.example.com": "production",
+         "partner.example.org": "production"
+      },
+      "domainPatterns": ["*.{environment}.example-cloud.de"]
    }
 }
 ```
 
-The gateway can then resolve URLs from any of these domains (e.g. a pasted
-backend link) to the correct backend.
+- `domains` maps irregular hostnames (typically the per-site production
+  domains) to their environment.
+- `domainPatterns` factor the regular site×environment host matrix (e.g.
+  `de.staging3.example-cloud.de`) into one entry per host suffix; the
+  gateway validates the `{environment}` label against the project's routes.
+
+Both keys are written by the LIA `.mcp.json` generator from the committed
+site configurations. To cross-check which domains the running instance
+actually serves (all site bases + `baseVariants`), print the flat inventory:
+
+```bash
+vendor/bin/typo3 mcp:domains
+# {"domains": ["de.staging1.example-cloud.de", "partner.example.org", ...]}
+```
 
 ## Development
 
