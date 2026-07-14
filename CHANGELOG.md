@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ReadTable returns FlexForm values as nested JSON across all sheets;
   previously non-`settings` fields came back with mangled keys
   (e.g. `persistencestoragePid`).
+- SiteInformationService::getAllDomains() now actually includes baseVariant
+  hosts: the previous code probed for a `Site::getBaseVariants()` method that
+  does not exist in TYPO3 13/14 and silently returned base hosts only.
+  Variants are read from the raw site configuration; the configured main
+  base is also kept when the runtime context already resolved a variant.
 
 ### Changed
 
@@ -39,6 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the `header_link` when set; GetPage and WriteTable document the RTE link
   convention `t3://page?uid=<pageId>#c<uid>` so LLM clients can build tables
   of contents.
+- New CLI command `mcp:domains`: prints every domain the instance serves
+  (site bases + all baseVariants) as JSON for the `x-mcp-proxy.domains` key
+  of the project's `.mcp.json`, enabling the MCP gateway to map additional
+  production domains to the correct backend.
 
 ### Removed
 

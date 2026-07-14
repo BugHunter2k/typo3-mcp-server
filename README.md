@@ -143,6 +143,35 @@ This method gives you admin privileges by default. Add this to your mcp config f
 }
 ```
 
+### Gateway Integration: Domain List
+
+When this instance sits behind an MCP routing gateway that maps incoming
+URLs to project backends via a `.mcp.json` file, list every domain the
+instance serves (site bases and all `baseVariants`, e.g. additional
+production domains) in an optional `domains` key. Generate the list with:
+
+```bash
+vendor/bin/typo3 mcp:domains
+# {"domains": ["partner.example.org", "stage.example.com", "www.example.com"]}
+```
+
+Embed the output into the gateway block (`x-mcp-proxy`) of the project's
+`.mcp.json` — that block is the only part the gateway reads:
+
+```json
+{
+   "mcpServers": { "...": {} },
+   "x-mcp-proxy": {
+      "project": "example",
+      "site": "example",
+      "domains": ["partner.example.org", "stage.example.com", "www.example.com"]
+   }
+}
+```
+
+The gateway can then resolve URLs from any of these domains (e.g. a pasted
+backend link) to the correct backend.
+
 ## Development
 
 ### Running Tests
