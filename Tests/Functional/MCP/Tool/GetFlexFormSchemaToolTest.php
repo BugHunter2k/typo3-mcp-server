@@ -6,7 +6,6 @@ namespace Hn\McpServer\Tests\Functional\MCP\Tool;
 
 use Hn\McpServer\MCP\Tool\Record\GetFlexFormSchemaTool;
 use Mcp\Types\TextContent;
-use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
 
 class GetFlexFormSchemaToolTest extends FunctionalTestCase
@@ -330,10 +329,9 @@ class GetFlexFormSchemaToolTest extends FunctionalTestCase
         $this->assertStringContainsString('FLEXFORM SCHEMA: news_pi1', $content);
         $this->assertStringContainsString('Table: tt_content', $content);
         $this->assertStringContainsString('Field: pi_flexform', $content);
-        $this->assertStringContainsString('Schema defined in file:', $content);
-        $this->assertStringContainsString('flexform_news_list.xml', $content);
-        
-        // Verify sheets are present
+
+        // Verify sheets are present (resolved via FlexFormTools, so the DS
+        // identifier events have run — no raw file path is exposed anymore)
         $this->assertStringContainsString('SHEETS:', $content);
         $this->assertStringContainsString('Sheet: sDEF', $content);
         $this->assertStringContainsString('Sheet: additional', $content);
@@ -372,8 +370,8 @@ class GetFlexFormSchemaToolTest extends FunctionalTestCase
         $content = $result->content[0]->text;
         
         $this->assertStringContainsString('FLEXFORM SCHEMA: news_categorylist', $content);
-        $this->assertStringContainsString('flexform_category_list.xml', $content);
-        
+        $this->assertStringContainsString('settings.', $content);
+
         // Test detail view FlexForm
         $result = $tool->execute([
             'identifier' => 'news_newsdetail'
@@ -383,7 +381,7 @@ class GetFlexFormSchemaToolTest extends FunctionalTestCase
         $content = $result->content[0]->text;
         
         $this->assertStringContainsString('FLEXFORM SCHEMA: news_newsdetail', $content);
-        $this->assertStringContainsString('flexform_news_detail.xml', $content);
+        $this->assertStringContainsString('settings.', $content);
     }
     
     /**
@@ -393,18 +391,20 @@ class GetFlexFormSchemaToolTest extends FunctionalTestCase
     {
         $tool = new GetFlexFormSchemaTool();
         
-        // recordUid parameter is accepted but not used for schema retrieval
+        // recordUid is used to load the real record for DataStructure resolution;
+        // a non-existing UID must not break resolution via the identifier.
         $result = $tool->execute([
             'identifier' => 'news_pi1',
-            'recordUid' => 123  // This parameter is ignored for schema
+            'recordUid' => 123  // Does not exist in this test setup
         ]);
         
         $this->assertFalse($result->isError);
         $content = $result->content[0]->text;
         
-        // Should still retrieve the schema successfully
+        // Should still retrieve the schema successfully (recordUid 123 does not
+        // exist, so resolution falls back to the synthesized identifier row)
         $this->assertStringContainsString('FLEXFORM SCHEMA: news_pi1', $content);
-        $this->assertStringContainsString('flexform_news_list.xml', $content);
+        $this->assertStringContainsString('settings.', $content);
     }
 
 }
