@@ -55,6 +55,7 @@ class WriteTableTool extends AbstractRecordTool
                 'FLEXFORM FIELDS: Pass as nested JSON objects (auto-converted to XML), e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}}. ' .
                 'The value is a PARTIAL PATCH: fields not included keep their stored values. Each field must be declared by the record type\'s FlexForm schema (see GetFlexFormSchema) — unknown fields are rejected. ' .
                 'ORDERING: When creating multiple elements on a page, chain positions: create first with "bottom", then "after:{uid}" for each next. ' .
+                'RTE LINKS (bodytext): Use TYPO3 link syntax — "t3://page?uid=<pageId>" for pages, "t3://page?uid=<pageId>#c<uid>" to jump to a content element (frontend anchors are id="c<uid>"; GetPage lists them). ' .
                 'Before creating content, use GetPage + ReadTable to understand page structure and existing content.',
             'inputSchema' => [
                 'type' => 'object',

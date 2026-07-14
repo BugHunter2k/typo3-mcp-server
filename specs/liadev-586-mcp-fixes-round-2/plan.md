@@ -4,7 +4,7 @@
 - Status: in-progress
 - Created: 2026-07-14 16:30
 - Plan-ID: b2149fa9-dc79-4d9e-b4b4-742fb75b34e0
-- Current Phase: 1/4
+- Current Phase: 3/4 (Phase 1 done; Phase 3 pulled before Phase 2 — Ingo's choice; both ⚡ parallel)
 - Ticket: LIADEV-586 (primary)
 - Structure: Complex (folder, plan.md only)
 - Repo: /home/hollmann/public_html/public/typo3_ext/typo3-mcp-server
@@ -262,11 +262,11 @@ Estimated: 1–2 days. Fixes K25 (partner.hormann.gr).
 Estimated: 0.5 day. Fixes K24 (TOC/anchors).
 ⚡ PARALLEL: independent of Phases 1–2.
 
-- [ ] `[MED]` GetPage: per content element expose the frontend anchor (`#c<uid>`, per
+- [x] `[MED]` GetPage: per content element expose the frontend anchor (`#c<uid>`, per
   D4) and `header_link` when set, in the content summary output
   (`Classes/MCP/Tool/GetPageTool.php`); functional test asserting anchors appear for a
   page with several elements.
-- [ ] `[LOW]` Tool descriptions: document the anchor convention in GetPage and
+- [x] `[LOW]` Tool descriptions: document the anchor convention in GetPage and
   WriteTable (bodytext RTE links: `t3://page?uid=<pid>#c<uid>`), so the LLM can build
   a TOC without guessing; extend an existing WriteTable functional test to write a
   bodytext containing such a link and read it back intact.
@@ -448,6 +448,23 @@ K24, K25, K26 are the drivers).
     reorder of resolveToWorkspaceUid verified side-effect-free; pre-existing
     stale docblock in ensureL10nStateForTranslation noted (unchanged, out of
     scope)
+- [2026-07-14 15:30] Phase 1 COMPLETE — review gate passed
+  - Final suite: 640 tests / 3417 assertions / 0 errors / 0 failures /
+    14 warnings (= documented baseline)
+  - Commits: 11e4332 (schema WIP), e7cd8df (DS-aware write/read);
+    merge --no-ff into integration: 40da698. NOT pushed (Ingo: push later)
+  - Next: Phase 3 (anchor navigation) per Ingo, then Phase 2
+- [2026-07-14 15:50] Phase 3 tasks implemented (branch feat/anchor-navigation)
+  - GetPageTool: "Anchor: #c<uid>" line per content element + "Header Link:"
+    when set; descriptions document t3://page?uid=<pid>#c<uid> (GetPage +
+    WriteTable bodytext)
+  - Tests: anchor assertions in testGetPageWithContentElements, new
+    testGetPageShowsHeaderLink, new WriteTableToolTest::
+    testBodytextAnchorLinkRoundTrip — 35 targeted tests green
+  - Critic verification: VERIFIED (confidence 4/5, 0 issues) — anchor UID
+    confirmed workspace-transparent (overlay before formatting, GetPageTool
+    select('*') includes header_link); full suite 642 tests / 0 errors /
+    0 failures / 14 baseline warnings
 
 ## Implementation Checklist
 
@@ -459,7 +476,8 @@ K24, K25, K26 are the drivers).
 - [x] Write path generalized (fetch-and-merge, DS-aware sheets, no silent drops)
 - [x] Partial-update survival test green (CRITICAL guard)
 - [x] Read path symmetric + round-trip test + parse errors explicit
-- [ ] **REVIEW GATE:** suite green, human approval, merged --no-ff
+- [x] **REVIEW GATE:** suite green, human approval, merged --no-ff
+      (commits 11e4332 + e7cd8df, merge 40da698; NOT pushed — Ingo's choice)
 
 ### Phase 2: Domain mapping
 - [ ] `mcp:domains` command + test
@@ -468,8 +486,8 @@ K24, K25, K26 are the drivers).
 - [ ] **REVIEW GATE:** human approval, merged --no-ff
 
 ### Phase 3: Anchor navigation
-- [ ] GetPage anchors + header_link exposed + test
-- [ ] Tool descriptions (t3://…#c<uid>) + link round-trip test
+- [x] GetPage anchors + header_link exposed + test
+- [x] Tool descriptions (t3://…#c<uid>) + link round-trip test
 - [ ] **REVIEW GATE:** human approval, merged --no-ff
 
 ### Phase 4: K20 verification batch
