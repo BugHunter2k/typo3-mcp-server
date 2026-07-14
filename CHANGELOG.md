@@ -35,6 +35,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   declare with an explicit error listing the available fields (previously a
   silent drop). ReadTable reports unparseable stored FlexForm XML as an
   error instead of returning an empty object.
+- WriteTable declares `destructiveHint: false` and documents that "delete"
+  only stages a workspace delete placeholder (reversible until publish) —
+  cautious MCP clients refused delete calls because an absent hint defaults
+  to true.
 
 ### Added
 

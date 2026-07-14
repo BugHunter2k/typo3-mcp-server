@@ -4,7 +4,7 @@
 - Status: in-progress
 - Created: 2026-07-14 16:30
 - Plan-ID: b2149fa9-dc79-4d9e-b4b4-742fb75b34e0
-- Current Phase: 2/4 (Phases 1+3 done+merged; Phase 2 in progress; Phase 4 blocked on staging-ki prereq)
+- Current Phase: 4/4 (Phases 1-3 done+merged; Phase 4: regression tests now, live verification blocked on staging-ki prereq)
 - Ticket: LIADEV-586 (primary)
 - Structure: Complex (folder, plan.md only)
 - Repo: /home/hollmann/public_html/public/typo3_ext/typo3-mcp-server
@@ -290,14 +290,14 @@ Jung, 2026-03-30):
 | "Ich kann permanente Löschungen nicht durchführen" | Task 3 (delete UX) | tool description issue |
 | FAQ answers not filled on element replace | Task 4 (live verification) | LLM/prompt behavior, observe |
 
-- [ ] `[MED]` Regression test: CType change with inline relations (K20 "Umbau
+- [x] `[MED]` Regression test: CType change with inline relations (K20 "Umbau
   Text-Media → Teaserbox failed") — functional test switching CType on update incl.
   image reference; expected already fixed by upstream #94/#98 (language control field);
   fix if red.
-- [ ] `[MED]` Regression tests: subheader writable (expected fixed by upstream #90
+- [x] `[MED]` Regression tests: subheader writable (expected fixed by upstream #90
   showitem-driven schema), page creation in workspace, bodytext emptied via update
   with `""` (K20 items) — add to `WriteTableToolTest`/`NonAdminWriteTest`; fix if red.
-- [ ] `[MED]` Delete UX (K20 "kann nicht löschen"): sharpen the WriteTable `delete`
+- [x] `[MED]` Delete UX (K20 "kann nicht löschen"): sharpen the WriteTable `delete`
   action description — deletion is staged in the workspace (delete placeholder),
   not permanent until publish; verify annotations (destructiveHint) don't make clients
   refuse; functional test for delete-in-workspace already exists → extend if gaps.
@@ -353,10 +353,16 @@ K24, K25, K26 are the drivers).
 
 ## Time Tracking
 
+Note: progress-log timestamps between 16:40-18:10 above are sequence markers,
+not wall-clock times — the session ran 13:25-15:10.
+
 ### 2026-07-14
-- [13:25-] - Phase 1: FlexForm DS-aware read/write (Task 1: WIP finalization)
-  Commits: (pending)
+- [13:25-15:10] 1h 45m - Phases 1-4 implementation (FlexForm DS-aware
+  read/write, anchors, domain mapping incl. gateway, K20 regression batch)
+  Commits: 11e4332, e7cd8df, 40da698, 93722e6, 37df9c2, 29594d8, a696146
+  (+ gateway 5323c66); Phase-4 commit pending
   Context: continuous
+**Day Total:** 1h 45m active | 7 commits | Jira: ❌ Not logged
 
 ## Progress Log
 
@@ -499,6 +505,25 @@ K24, K25, K26 are the drivers).
   - Also verified by critic: only caller of getAllDomains() is the GetPage
     tool-description text (more domains harmless); 404 hint leaks nothing
     beyond the pre-existing unauthenticated /routes endpoint.
+- [2026-07-14 17:45] Phase 2 gate passed
+  - Extension: commit 29594d8, merge a696146 (not pushed)
+  - Gateway: LOCAL commit 5323c66 on feat/domain-project-resolution in
+    ~/tmp/lia-mcp-gateway — push + MR deliberately deferred to Ingo
+  - Final suite 643 / 0 / 0; Phase 4 (regression tests) started per Ingo
+- [2026-07-14 18:10] Phase 4 tasks 1-3 implemented (branch test/k20-regression-batch)
+  - New K20RegressionTest (5 tests, all green ON FIRST RUN — the K20 findings
+    are indeed fixed by upstream #90/#94/#98 + fork workspace fixes, no code
+    fix needed): CType change with inline file relation, subheader writable,
+    page creation in workspace (live-UID transparency), bodytext emptied via
+    "", delete-UX schema assertions
+  - Delete UX root cause: annotations had NO destructiveHint — absent
+    defaults to TRUE per MCP spec, so cautious clients refused deletes. Now
+    explicitly false + action description documents staged/reversible
+    workspace deletion
+  - German ticket comment drafted (jira-comment-writer), NOT posted
+  - Full suite: 648 tests / 0 errors / 0 failures / 14 baseline warnings
+  - Open: live verification on staging-ki (prerequisite: Ingo deploys
+    dev-integration/merge-main-into-v14)
 
 ## Implementation Checklist
 
@@ -529,8 +554,10 @@ K24, K25, K26 are the drivers).
 
 ### Phase 4: K20 verification batch
 - [ ] Prerequisite: staging-ki on dev-integration (Ingo)
-- [ ] CType-change regression test
-- [ ] Subheader/page-create/bodytext-empty regression tests
-- [ ] Delete-UX description + verification
+- [x] CType-change regression test
+- [x] Subheader/page-create/bodytext-empty regression tests
+- [x] Delete-UX description + verification
 - [ ] Live verification + German ticket comment draft
+      (draft DONE 2026-07-14, shown to Ingo — posting only on explicit OK;
+      live verification blocked on staging-ki prerequisite)
 - [ ] **REVIEW GATE:** human approval, merged --no-ff

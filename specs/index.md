@@ -4,7 +4,7 @@ Last updated: 2026-07-14 15:20
 
 ## Active Plans
 
-- **[LIADEV-586 Round 2 — MCP Fixes & Extensions](liadev-586-mcp-fixes-round-2/plan.md)** - Status: in-progress - Created: 2026-07-14 16:30 - Updated: 2026-07-14 15:30 - Phase: 3/4 (Phase 1 done+merged; Phase 3 before Phase 2) - Ticket: LIADEV-586
+- **[LIADEV-586 Round 2 — MCP Fixes & Extensions](liadev-586-mcp-fixes-round-2/plan.md)** - Status: in-progress - Created: 2026-07-14 16:30 - Updated: 2026-07-14 15:10 - Phase: 4/4 (Phases 1-3 done+merged; Phase 4 tests done, live verification blocked on staging-ki) - Ticket: LIADEV-586
 
 ## Reference Documents (not plans)
 
