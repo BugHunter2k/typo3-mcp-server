@@ -4,7 +4,7 @@
 - Status: in-progress
 - Created: 2026-07-14 16:30
 - Plan-ID: b2149fa9-dc79-4d9e-b4b4-742fb75b34e0
-- Current Phase: 3/4 (Phase 1 done; Phase 3 pulled before Phase 2 — Ingo's choice; both ⚡ parallel)
+- Current Phase: 2/4 (Phases 1+3 done+merged; Phase 2 in progress; Phase 4 blocked on staging-ki prereq)
 - Ticket: LIADEV-586 (primary)
 - Structure: Complex (folder, plan.md only)
 - Repo: /home/hollmann/public_html/public/typo3_ext/typo3-mcp-server
@@ -233,19 +233,19 @@ Estimated: 1–1.5 days. Fixes K26 (Jessica).
 Estimated: 1–2 days. Fixes K25 (partner.hormann.gr).
 ⚡ PARALLEL: independent of Phase 1; may run before/alongside it.
 
-- [ ] `[MED]` Extension: new CLI command `mcp:domains` (per D3) in
+- [x] `[MED]` Extension: new CLI command `mcp:domains` (per D3) in
   `Classes/Command/` (follow `OAuthManageCommand` style, register in
   `Configuration/Services.yaml`): outputs JSON `{"domains": ["www.example.com",
   "stage.example.com", ...]}` from `SiteFinder` — every site's base host + all
   baseVariant hosts, deduplicated; reuse/align with
   `SiteInformationService::getAllDomains()` (already exists, check coverage of
   baseVariants). Functional test with multi-site + baseVariant fixture.
-- [ ] `[MED]` `.mcp.json` schema: add optional `domains` array; document the key and
+- [x] `[MED]` `.mcp.json` schema: add optional `domains` array; document the key and
   the `mcp:domains` generator in README.md (integrator track) and update the
   `enabling-typo3-ai-gateway` skill at
   `~/.claude/skills/enabling-typo3-ai-gateway/SKILL.md` (standalone skill directory —
   NOT part of the louis-claude-marketplace repo) so new setups include domains.
-- [ ] `[MED]` Gateway: extend the allowlist builder to also index the `domains` arrays
+- [x] `[MED]` Gateway: extend the allowlist builder to also index the `domains` arrays
   (domain → project/backend mapping) and use it to resolve incoming URLs (e.g. a
   pasted backend link `https://partner.hormann.gr/typo3/...`) to the correct backend —
   suggested behavior: the 403 path answers with the matched project's canonical MCP URL
@@ -465,6 +465,40 @@ K24, K25, K26 are the drivers).
     confirmed workspace-transparent (overlay before formatting, GetPageTool
     select('*') includes header_link); full suite 642 tests / 0 errors /
     0 failures / 14 baseline warnings
+- [2026-07-14 16:40] Phase 3 gate passed: commit 93722e6, merge 37df9c2 (not
+  pushed). Phase 2 started on branch feat/site-domains-export.
+- [2026-07-14 17:10] Phase 2 tasks implemented
+  - Extension: DomainsCommand (mcp:domains, JSON output), registered in
+    Services.yaml; BUG FOUND+FIXED in SiteInformationService::getAllDomains():
+    Site::getBaseVariants() does not exist in TYPO3 13/14 — the method_exists
+    probe silently skipped ALL variants. Variants now read from the raw site
+    configuration (plus configured main base, since the entity resolves a
+    matching variant into getBase()). DomainsCommandTest with 2 sites +
+    baseVariants + dedup green; full suite 643 tests / 0 errors / 0 failures.
+  - Docs: README "Gateway Integration: Domain List" section; gateway skill
+    updated. IMPORTANT contract correction vs. plan wording: domains lives in
+    the `x-mcp-proxy` block of .mcp.json (the only block the gateway reads),
+    not top-level.
+  - Gateway (~/tmp/lia-mcp-gateway clone, verified facts): sync interval is
+    15 min + ETag + D3 stale-carry (architecture doc's "24h SWR" is stale).
+    Implemented x-mcp-proxy.domains parsing (strict, lowercased, dedup,
+    validate_host), {host: project} index in RouteRegistry (atomic swap,
+    D3 carry-forward incl. domains), 404 unknown-route now answers with the
+    owning project + canonical connector URLs on domain match. specs 001/002
+    + CHANGELOG updated. 325 tests passed (11 new), ruff clean. Commit + MR
+    pending user approval.
+- [2026-07-14 17:30] Critic verification Phase 2: ISSUES_FOUND (confidence
+  4/5) — gateway fully VERIFIED (critic re-ran make test/lint itself);
+  2 extension edge cases, 1 fixed:
+  1. FIXED: unresolved %env()% placeholders in site bases surfaced as junk
+     "domains" (gateway would reject the whole .mcp.json). getAllDomains()
+     now filters through isPlausibleHostname() (same host rule as the
+     gateway's validate_host); regression covered in DomainsCommandTest.
+  2. Accepted: scheme-less base entries yield no host and are omitted —
+     broken TYPO3 config, documented in a code comment.
+  - Also verified by critic: only caller of getAllDomains() is the GetPage
+    tool-description text (more domains harmless); 404 hint leaks nothing
+    beyond the pre-existing unauthenticated /routes endpoint.
 
 ## Implementation Checklist
 
@@ -480,15 +514,18 @@ K24, K25, K26 are the drivers).
       (commits 11e4332 + e7cd8df, merge 40da698; NOT pushed — Ingo's choice)
 
 ### Phase 2: Domain mapping
-- [ ] `mcp:domains` command + test
-- [ ] `.mcp.json` `domains` key documented (README + gateway skill)
-- [ ] Gateway allowlist/domain lookup + test (separate repo MR)
-- [ ] **REVIEW GATE:** human approval, merged --no-ff
+- [x] `mcp:domains` command + test
+- [x] `.mcp.json` `domains` key documented (README + gateway skill)
+- [x] Gateway allowlist/domain lookup + test (separate repo MR)
+      (Ingo's choice: gateway committed LOCALLY only in ~/tmp/lia-mcp-gateway,
+      push + MR deferred to Ingo)
+- [x] **REVIEW GATE:** human approval, merged --no-ff
 
 ### Phase 3: Anchor navigation
 - [x] GetPage anchors + header_link exposed + test
 - [x] Tool descriptions (t3://…#c<uid>) + link round-trip test
-- [ ] **REVIEW GATE:** human approval, merged --no-ff
+- [x] **REVIEW GATE:** human approval, merged --no-ff
+      (commit 93722e6, merge 37df9c2; not pushed)
 
 ### Phase 4: K20 verification batch
 - [ ] Prerequisite: staging-ki on dev-integration (Ingo)
