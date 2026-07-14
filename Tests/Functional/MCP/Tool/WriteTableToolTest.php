@@ -1013,7 +1013,9 @@ class WriteTableToolTest extends AbstractFunctionalTest
         $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
 
         // Test creating content with FlexForm data
-        // Use a plugin content element which has a pi_flexform field
+        // Use a plugin content element which has a pi_flexform field. The
+        // fields must be declared by the plugin's DataStructure — undeclared
+        // FlexForm fields are rejected explicitly since the DS-aware write path.
         if ($typo3Version->getMajorVersion() >= 14) {
             // In TYPO3 14+, plugins have their own CType (e.g., 'news_pi1')
             $data = [
@@ -1021,8 +1023,8 @@ class WriteTableToolTest extends AbstractFunctionalTest
                 'header' => 'Plugin with FlexForm',
                 'pi_flexform' => [
                     'settings' => [
-                        'caption' => 'Plugin Caption',
-                        'headerPosition' => 'top'
+                        'orderBy' => 'datetime',
+                        'orderDirection' => 'desc'
                     ]
                 ]
             ];
@@ -1030,11 +1032,12 @@ class WriteTableToolTest extends AbstractFunctionalTest
             // In TYPO3 13, plugins use CType='list' with list_type field
             $data = [
                 'CType' => 'list',
+                'list_type' => 'news_pi1',
                 'header' => 'Plugin with FlexForm',
                 'pi_flexform' => [
                     'settings' => [
-                        'caption' => 'Plugin Caption',
-                        'headerPosition' => 'top'
+                        'orderBy' => 'datetime',
+                        'orderDirection' => 'desc'
                     ]
                 ]
             ];

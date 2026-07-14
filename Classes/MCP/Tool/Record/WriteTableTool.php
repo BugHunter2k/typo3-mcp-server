@@ -9,6 +9,7 @@ use Hn\McpServer\Event\AfterRecordWriteEvent;
 use Hn\McpServer\Event\BeforeRecordWriteEvent;
 use Hn\McpServer\Exception\DatabaseException;
 use Hn\McpServer\Exception\ValidationException;
+use Hn\McpServer\Service\FlexFormStructureService;
 use Hn\McpServer\Service\LanguageService;
 use Mcp\Types\CallToolResult;
 use Psr\EventDispatcher\EventDispatcherInterface;
@@ -51,7 +52,8 @@ class WriteTableTool extends AbstractRecordTool
                 'INLINE RELATIONS (CRITICAL): On update, passing an inline field REPLACES ALL existing children — omitted children are deleted (embedded) or unlinked (independent). ' .
                 'To keep existing children, include their UIDs: [2546, 2547, {"CType": "textmedia", "header": "New"}]. To update an existing child: {"uid": 2546, "header": "Updated"}. Order in the array defines sorting. ' .
                 'Nested inline relations are supported: child record data may itself contain inline arrays. ' .
-                'FLEXFORM FIELDS: Pass as JSON objects (auto-converted to XML). Use "settings.fieldName" keys for plugin settings. ' .
+                'FLEXFORM FIELDS: Pass as nested JSON objects (auto-converted to XML), e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}}. ' .
+                'The value is a PARTIAL PATCH: fields not included keep their stored values. Each field must be declared by the record type\'s FlexForm schema (see GetFlexFormSchema) — unknown fields are rejected. ' .
                 'ORDERING: When creating multiple elements on a page, chain positions: create first with "bottom", then "after:{uid}" for each next. ' .
                 'Before creating content, use GetPage + ReadTable to understand page structure and existing content.',
             'inputSchema' => [
@@ -83,7 +85,8 @@ class WriteTableTool extends AbstractRecordTool
                             'FILE FIELDS (image, media, assets): Array of sys_file UIDs [3, 4] or objects [{"uid_local": 3, "title": "...", "alternative": "...", "description": "Caption"}]. ' .
                             'SEARCH-AND-REPLACE (update only): For text/input/email/link/slug fields, pass [{"search": "old", "replace": "new"}] instead of full text. ' .
                             'Add "replaceAll": true per operation if search may match multiple times. Only these field types support search-and-replace. ' .
-                            'FLEXFORM: Pass as JSON object with "settings.fieldName" keys — auto-converted to XML.',
+                            'FLEXFORM: Pass as nested JSON object, e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}} — auto-converted to XML. ' .
+                            'Partial patch semantics: omitted FlexForm fields keep their stored values; fields must exist in the FlexForm schema (GetFlexFormSchema).',
                         'additionalProperties' => true,
                         'examples' => [
                             ['title' => 'News Title', 'bodytext' => 'News <b>content</b>', 'datetime' => '2024-01-01 10:00:00'],
@@ -333,7 +336,7 @@ class WriteTableTool extends AbstractRecordTool
         $inlineRelations = $this->extractInlineRelations($table, $data);
 
         // Convert data for storage
-        $data = $this->convertDataForStorage($table, $data);
+        $data = $this->convertDataForStorage($table, $data, null);
 
         // Prepare the data array
         $newRecordData = $data;
@@ -427,15 +430,17 @@ class WriteTableTool extends AbstractRecordTool
         // Extract inline relations and build unified dataMap
         $inlineRelations = $this->extractInlineRelations($table, $data);
 
+        // Resolve the live UID to workspace UID (once, used throughout).
+        // Must happen before convertDataForStorage: FlexForm conversion loads
+        // the workspace version of the record to merge with the current value.
+        $workspaceUid = $this->resolveToWorkspaceUid($table, $uid);
+
         // Convert data for storage
-        $data = $this->convertDataForStorage($table, $data);
+        $data = $this->convertDataForStorage($table, $data, $workspaceUid);
 
         // For translation records, add l10n_state overrides so DataHandler treats
         // explicitly updated fields as "custom" (not synced from parent)
         $data = $this->ensureL10nStateForTranslation($table, $uid, $data);
-
-        // Resolve the live UID to workspace UID (once, used throughout)
-        $workspaceUid = $this->resolveToWorkspaceUid($table, $uid);
 
         // Build unified dataMap: parent update + all inline children
         $dataMap = [$table => [$workspaceUid => $data]];
@@ -1070,7 +1075,11 @@ class WriteTableTool extends AbstractRecordTool
                     // Run field conversions (e.g. JSON-encode imageManipulation/crop)
                     // so patches to existing file references survive the round trip.
                     if (!empty($item)) {
-                        $dataMap[$foreignTable][$existingUid] = $this->convertDataForStorage($foreignTable, $item);
+                        $dataMap[$foreignTable][$existingUid] = $this->convertDataForStorage(
+                            $foreignTable,
+                            $item,
+                            $this->resolveToWorkspaceUid($foreignTable, $existingUid)
+                        );
                     }
 
                     $childIdentifiers[] = $existingUid;
@@ -1095,7 +1104,7 @@ class WriteTableTool extends AbstractRecordTool
                     // Run field conversions on the remaining scalar fields (e.g. JSON-encode
                     // imageManipulation/crop) so embedded children like sys_file_reference
                     // survive the round trip with ReadTableTool.
-                    $item = $this->convertDataForStorage($foreignTable, $item);
+                    $item = $this->convertDataForStorage($foreignTable, $item, null);
 
                     if (!empty($nestedInlineRelations)) {
                         // Add child to dataMap first so buildInlineDataMap can reference it
@@ -1483,9 +1492,15 @@ class WriteTableTool extends AbstractRecordTool
     }
 
     /**
-     * Convert data for storage
+     * Convert data for storage.
+     *
+     * @param int|null $recordUid Workspace UID of the record being updated,
+     *                            or null when creating a new record. FlexForm
+     *                            conversion uses it to load the current record
+     *                            for DataStructure resolution and to merge the
+     *                            incoming partial value with the stored one.
      */
-    protected function convertDataForStorage(string $table, array $data): array
+    protected function convertDataForStorage(string $table, array $data, ?int $recordUid): array
     {
         // Process each field
         foreach ($data as $fieldName => $value) {
@@ -1522,49 +1537,168 @@ class WriteTableTool extends AbstractRecordTool
                 
                 // If the value is an array or JSON string, convert it to XML
                 $flexFormArray = is_array($value) ? $value : (is_string($value) && strpos($value, '{') === 0 ? json_decode($value, true) : null);
-                
-                if (is_array($flexFormArray)) {
-                    // Prepare the data structure for TYPO3's XML conversion
-                    $flexFormData = [
-                        'data' => [
-                            'sDEF' => [
-                                'lDEF' => []
-                            ]
-                        ]
-                    ];
-                    
-                    // Process settings fields — flatten nested arrays with dot notation.
-                    // TYPO3 FlexForm fields use dotted paths (e.g. "settings.filter.newsTypes")
-                    // which the Extbase settings parser un-nests back into $settings['filter']['newsTypes'].
-                    // Without dot-flattening, array2xml concatenates the keys without a separator,
-                    // producing unreadable fields like "settingsfilternewsTypes".
-                    if (isset($flexFormArray['settings']) && is_array($flexFormArray['settings'])) {
-                        foreach ($this->flattenFlexFormSettings($flexFormArray['settings'], 'settings') as $flatKey => $leafValue) {
-                            $flexFormData['data']['sDEF']['lDEF'][$flatKey]['vDEF'] = $leafValue;
-                        }
-                    }
 
-                    // Process other top-level scalar fields (non-settings, non-arrays)
-                    foreach ($flexFormArray as $key => $val) {
-                        if ($key !== 'settings' && !is_array($val)) {
-                            $flexFormData['data']['sDEF']['lDEF'][$key]['vDEF'] = $val;
-                        }
-                    }
-                    
-                    // Serialise via TYPO3's FlexFormTools so dotted field names land in the
-                    // `index` attribute (<field index="settings.media.maxWidth">) instead of
-                    // being collapsed into a dot-less element name by a bare array2xml. This
-                    // keeps multi-level settings (e.g. settings.media.maxWidth) intact through
-                    // the round trip and for the Extbase frontend's nested $settings tree.
-                    $flexFormTools = GeneralUtility::makeInstance(FlexFormTools::class);
-                    $data[$fieldName] = $flexFormTools->flexArray2Xml($flexFormData);
+                if (is_array($flexFormArray)) {
+                    $data[$fieldName] = $this->convertFlexFormValueForStorage($table, $fieldName, $flexFormArray, $recordUid, $data);
                 }
             }
         }
         
         return $data;
     }
-    
+
+    /**
+     * Convert a FlexForm JSON/array value into the XML DataHandler stores.
+     *
+     * The incoming value is a PARTIAL PATCH, not a full replacement: the
+     * record's current FlexForm value is loaded (workspace version — the
+     * caller passes the workspace UID), the incoming dotted-path values are
+     * overlaid, and the merged set is serialized. DataHandler's own
+     * merge-with-current logic only runs for array input; this tool passes
+     * pre-serialized XML strings, which DataHandler stores as-is — without
+     * this merge, updating one FlexForm field would delete all others.
+     *
+     * Every field is placed into the sheet its DataStructure declares it in
+     * (FormEngine renders per-sheet backend tabs, and EXT:form injects
+     * finisher-override fields under dynamically created sheet keys). ALL
+     * nested subtrees are dot-flattened — not only `settings`: a value like
+     * {"persistence": {"storagePid": "1"}} becomes the FlexForm field
+     * "persistence.storagePid". Fields the DataStructure does not declare
+     * are rejected with an explicit error instead of being silently dropped.
+     *
+     * @param array<string, mixed> $value Decoded FlexForm value from the client
+     * @param int|null $recordUid Workspace UID on update, null on create
+     * @param array<string, mixed> $pendingData Full pending write payload — its
+     *                             pointer fields (e.g. a CType change in the
+     *                             same request) win over the stored record when
+     *                             resolving the DataStructure
+     */
+    protected function convertFlexFormValueForStorage(
+        string $table,
+        string $fieldName,
+        array $value,
+        ?int $recordUid,
+        array $pendingData
+    ): string {
+        $currentRecord = $recordUid !== null ? BackendUtility::getRecord($table, $recordUid) : null;
+        $currentXml = is_string($currentRecord[$fieldName] ?? null) ? $currentRecord[$fieldName] : '';
+
+        // Row context for DataStructure resolution: stored record merged with
+        // the pending payload (pending wins — covers CType changes in the same
+        // request). The FlexForm field itself must stay the stored XML string:
+        // DS events (EXT:form) read it to locate the persistenceIdentifier.
+        $row = array_merge($currentRecord ?? [], $pendingData);
+        $row[$fieldName] = $currentXml;
+
+        $structureService = GeneralUtility::makeInstance(FlexFormStructureService::class);
+        $structure = $structureService->resolveDataStructureForRecord($table, $fieldName, $row);
+        if ($structure === null) {
+            throw new ValidationException([
+                "Cannot resolve the FlexForm data structure for $table.$fieldName. "
+                . 'The record type (e.g. CType) does not declare a FlexForm schema, so JSON FlexForm values cannot be mapped. '
+                . 'Use GetFlexFormSchema to inspect available structures.',
+            ]);
+        }
+        $fieldSheetMap = $structureService->getFieldSheetMap($structure);
+
+        // Validate the incoming fields against the DataStructure before merging
+        $incomingValues = [];
+        foreach ($value as $key => $subValue) {
+            if (is_array($subValue)) {
+                $incomingValues += $this->flattenFlexFormSettings($subValue, (string)$key);
+            } else {
+                $incomingValues[(string)$key] = $subValue;
+            }
+        }
+        foreach (array_keys($incomingValues) as $flatKey) {
+            if (!isset($fieldSheetMap[$flatKey])) {
+                throw new ValidationException([
+                    "Unknown FlexForm field \"$flatKey\" for $table.$fieldName: the resolved data structure does not declare it. "
+                    . 'Available fields: ' . implode(', ', array_keys($fieldSheetMap)),
+                ]);
+            }
+            if (count($fieldSheetMap[$flatKey]) > 1) {
+                throw new ValidationException([
+                    "Ambiguous FlexForm field \"$flatKey\" for $table.$fieldName: declared in multiple sheets ("
+                    . implode(', ', $fieldSheetMap[$flatKey]) . ')',
+                ]);
+            }
+        }
+
+        // Merge: current values first (fields known to the DataStructure are
+        // re-placed into their canonical sheet, which also heals values older
+        // tool versions wrote into sDEF unconditionally; unknown leftovers
+        // keep their stored sheet), then the incoming values overlay.
+        $flexFormData = ['data' => []];
+        foreach ($this->extractFlexFormValues($table, $fieldName, $currentXml) as $flatKey => $current) {
+            $sheetKey = $fieldSheetMap[$flatKey][0] ?? $current['sheet'];
+            $flexFormData['data'][$sheetKey]['lDEF'][$flatKey]['vDEF'] = $current['value'];
+        }
+        foreach ($incomingValues as $flatKey => $leafValue) {
+            $flexFormData['data'][$fieldSheetMap[$flatKey][0]]['lDEF'][$flatKey]['vDEF'] = $leafValue;
+        }
+
+        if ($flexFormData['data'] === []) {
+            // Empty patch on an empty value — keep an empty default sheet so
+            // DataHandler stores a valid FlexForm document.
+            $flexFormData['data'] = ['sDEF' => ['lDEF' => []]];
+        }
+
+        // Serialise via TYPO3's FlexFormTools so dotted field names land in the
+        // `index` attribute (<field index="settings.media.maxWidth">) instead of
+        // being collapsed into a dot-less element name by a bare array2xml.
+        $flexFormTools = GeneralUtility::makeInstance(FlexFormTools::class);
+        return $flexFormTools->flexArray2Xml($flexFormData);
+    }
+
+    /**
+     * Extract the stored FlexForm values of a record as a flat map of
+     * dotted field name => ['sheet' => sheet key, 'value' => stored value].
+     *
+     * When the same field name appears in several sheets (older tool versions
+     * wrote every field into sDEF), the last occurrence wins — matching the
+     * read side, where FlexFormService flattens sheets in order.
+     *
+     * @return array<string, array{sheet: string, value: mixed}>
+     */
+    protected function extractFlexFormValues(string $table, string $fieldName, string $currentXml): array
+    {
+        if ($currentXml === '') {
+            return [];
+        }
+
+        $parsed = GeneralUtility::xml2array($currentXml);
+        if (!is_array($parsed)) {
+            // xml2array returns an error string for unparseable XML. Merging
+            // against garbage would silently discard the stored value, so be
+            // explicit; raw XML passthrough can be used to overwrite it.
+            throw new ValidationException([
+                "The stored FlexForm value of $table.$fieldName cannot be parsed ($parsed). "
+                . 'Pass a full FlexForm XML string (starting with <?xml) to replace it.',
+            ]);
+        }
+
+        $values = [];
+        foreach (($parsed['data'] ?? []) as $sheetKey => $languages) {
+            // A sheet without fields is parsed as 'lDEF' => '' (empty string,
+            // not an array) by xml2array — same guard as TYPO3 core's
+            // FlexFormService::convertFlexFormContentToArray().
+            if (!is_array($languages['lDEF'] ?? false)) {
+                continue;
+            }
+            foreach ($languages['lDEF'] as $flatKey => $valueContainer) {
+                if (is_array($valueContainer) && array_key_exists('vDEF', $valueContainer)) {
+                    $values[(string)$flatKey] = [
+                        'sheet' => (string)$sheetKey,
+                        'value' => $valueContainer['vDEF'],
+                    ];
+                }
+            }
+        }
+
+        return $values;
+    }
+
     /**
      * For translation records, set l10n_state to "custom" for fields that
      * have allowLanguageSynchronization enabled and are being explicitly updated.
