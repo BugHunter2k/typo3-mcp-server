@@ -14,8 +14,8 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Core\Page\PageRenderer;
 use TYPO3\CMS\Core\Http\JsonResponse;
 use TYPO3\CMS\Core\Http\HtmlResponse;
+use Hn\McpServer\Http\RequestUrlTrait;
 use Hn\McpServer\MCP\ToolRegistry;
-use Hn\McpServer\Service\BaseUrlService;
 use Hn\McpServer\Service\OAuthService;
 use Hn\McpServer\Service\WorkspaceContextService;
 
@@ -24,6 +24,8 @@ use Hn\McpServer\Service\WorkspaceContextService;
  */
 class McpServerModuleController
 {
+    use RequestUrlTrait;
+
     public function __construct(
         private readonly ModuleTemplateFactory $moduleTemplateFactory,
         private readonly ToolRegistry $toolRegistry,
@@ -31,7 +33,6 @@ class McpServerModuleController
         private readonly OAuthService $oauthService,
         private readonly WorkspaceContextService $workspaceContextService,
         private readonly UriBuilder $uriBuilder,
-        private readonly BaseUrlService $baseUrlService,
     ) {}
 
     public function mainAction(ServerRequestInterface $request): ResponseInterface
@@ -49,10 +50,18 @@ class McpServerModuleController
         $tokens = $this->oauthService->getUserTokens($userId);
         
         // Get base URL for endpoint
-        $baseUrl = $this->getBaseUrl($request);
-        
+        $baseUrl = $this->getRequestBaseUrl($request);
+
         // Generate OAuth authorization URL
         $authUrl = $this->oauthService->generateAuthorizationUrl($baseUrl, 'Claude Desktop');
+
+        // RFC 8414 / RFC 9728 well-known discovery URLs must live at the domain root,
+        // not under the TYPO3 site path, so they need the request origin separately.
+        $sitePath = $this->getRequestSitePath($request);
+        $isSubdirectoryInstall = $sitePath !== '';
+        $hostUrl = $this->getRequestHostUrl($request);
+        $wellKnownAuthServerUrl = $hostUrl . '/.well-known/oauth-authorization-server' . $sitePath;
+        $wellKnownProtectedResourceUrl = $hostUrl . '/.well-known/oauth-protected-resource' . $sitePath . '/mcp';
         
         // Get available tools
         $tools = [];
@@ -100,6 +109,9 @@ class McpServerModuleController
             'siteName' => $this->getSiteName(),
             'hasWorkspace' => $hasWorkspace,
             'isLocalhost' => $isLocalhost,
+            'isSubdirectoryInstall' => $isSubdirectoryInstall,
+            'wellKnownAuthServerUrl' => $wellKnownAuthServerUrl,
+            'wellKnownProtectedResourceUrl' => $wellKnownProtectedResourceUrl,
             'createWorkspaceUrl' => $createWorkspaceUrl,
         ];
         
@@ -201,12 +213,6 @@ class McpServerModuleController
             ], 500);
         }
     }
-    
-    private function getBaseUrl(ServerRequestInterface $request): string
-    {
-        return $this->baseUrlService->getBaseUrl($request);
-    }
-    
     
     private function getSiteName(): string
     {

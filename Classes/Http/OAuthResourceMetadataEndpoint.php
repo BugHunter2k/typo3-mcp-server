@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\Http;
 
-use Hn\McpServer\Service\BaseUrlService;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TYPO3\CMS\Core\Http\Response;
@@ -17,10 +16,7 @@ use TYPO3\CMS\Core\Http\Stream;
 class OAuthResourceMetadataEndpoint
 {
     use CorsHeadersTrait;
-
-    public function __construct(
-        private readonly BaseUrlService $baseUrlService,
-    ) {}
+    use RequestUrlTrait;
 
     public function __invoke(ServerRequestInterface $request): ResponseInterface
     {
@@ -29,7 +25,8 @@ class OAuthResourceMetadataEndpoint
             return $this->handlePreflightRequest($request);
         }
 
-        $baseUrl = $this->baseUrlService->getBaseUrl($request);
+        // Get base URL from request
+        $baseUrl = $this->getRequestBaseUrl($request);
 
         $metadata = [
             'resource' => $baseUrl . '/mcp',

@@ -21,7 +21,6 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Hn\McpServer\MCP\McpServerFactory;
 use Hn\McpServer\Service\WorkspaceContextService;
-use Hn\McpServer\Service\BaseUrlService;
 use Hn\McpServer\Service\OAuthService;
 use Hn\McpServer\Service\SiteInformationService;
 use Hn\McpServer\Http\CorsHeadersTrait;
@@ -32,6 +31,7 @@ use Hn\McpServer\Http\CorsHeadersTrait;
 class McpEndpoint
 {
     use CorsHeadersTrait;
+    use RequestUrlTrait;
 
     /**
      * eID entry point via __invoke method
@@ -218,10 +218,7 @@ class McpEndpoint
         // Build WWW-Authenticate header with resource_metadata URL (RFC 9728)
         $wwwAuth = 'Bearer';
         if ($request !== null) {
-            $container = GeneralUtility::getContainer();
-            $baseUrlService = $container->get(BaseUrlService::class);
-            $baseUrl = $baseUrlService->getBaseUrl($request);
-            $resourceMetadataUrl = $baseUrl . '/.well-known/oauth-protected-resource/mcp';
+            $resourceMetadataUrl = $this->getRequestBaseUrl($request) . '/.well-known/oauth-protected-resource/mcp';
             $wwwAuth = 'Bearer resource_metadata="' . $resourceMetadataUrl . '"';
         }
 
