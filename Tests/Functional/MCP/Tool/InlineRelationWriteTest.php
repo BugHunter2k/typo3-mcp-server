@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\Tests\Functional\MCP\Tool;
 
+use Doctrine\DBAL\ParameterType;
 use Hn\McpServer\MCP\Tool\Record\ReadTableTool;
 use Hn\McpServer\MCP\Tool\Record\WriteTableTool;
+use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Localization\LanguageServiceFactory;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
@@ -793,5 +795,167 @@ class InlineRelationWriteTest extends FunctionalTestCase
         $this->assertFalse(!empty(false), 'Boolean false should fail !empty()');
         $this->assertFalse(!empty(''), 'Empty string should fail !empty()');
         $this->assertFalse(!empty(0), 'Integer 0 should fail !empty()');
+    }
+
+    /**
+     * Updating a file field must not touch references of a record in ANOTHER table
+     * that happens to carry the same UID.
+     *
+     * sys_file_reference holds the rows of every file field of every table. Its
+     * uid_foreign only carries the parent UID — "tablenames" and "fieldname" carry the
+     * rest of the context. Small UIDs collide across tables all the time, so an orphan
+     * lookup that only matches uid_foreign collects references of unrelated records
+     * and deletes them.
+     *
+     * Fixture: page 100 (media) and news record 100 (fal_media) share UID 100.
+     */
+    public function testUpdatingFileFieldKeepsReferencesOfSameUidInOtherTables(): void
+    {
+        $this->importCSVDataSet(__DIR__ . '/../../Fixtures/pages.csv');
+        $this->importCSVDataSet(__DIR__ . '/../../Fixtures/file_reference_uid_collision.csv');
+
+        // Baseline: both records own exactly one reference
+        $this->assertSame([901], $this->findEffectiveFileReferences('tx_news_domain_model_news', 100, 'fal_media'));
+        $this->assertSame([900], $this->findEffectiveFileReferences('pages', 100, 'media'));
+
+        // Drop the news record's media
+        $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
+        $result = $writeTool->execute([
+            'table' => 'tx_news_domain_model_news',
+            'action' => 'update',
+            'uid' => 100,
+            'data' => [
+                'fal_media' => [],
+            ],
+        ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+
+        $this->assertSame(
+            [],
+            $this->findEffectiveFileReferences('tx_news_domain_model_news', 100, 'fal_media'),
+            'The fal_media reference of the updated news record should be gone'
+        );
+        $this->assertSame(
+            [900],
+            $this->findEffectiveFileReferences('pages', 100, 'media'),
+            'The media reference of page 100 belongs to another table and must survive'
+        );
+    }
+
+    /**
+     * Updating one file field must not touch the other file fields of the SAME record.
+     *
+     * Here tablenames and uid_foreign are identical for both references — only
+     * "fieldname" separates them, so it has to be part of the orphan lookup as well.
+     */
+    public function testUpdatingFileFieldKeepsReferencesOfOtherFieldsOnSameRecord(): void
+    {
+        $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
+
+        $result = $writeTool->execute([
+            'table' => 'pages',
+            'action' => 'create',
+            'pid' => 0,
+            'data' => [
+                'title' => 'Two file fields',
+                'doktype' => 1,
+            ],
+        ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+        $pageUid = json_decode($result->content[0]->text, true)['uid'];
+
+        $result = $writeTool->execute([
+            'table' => 'tx_news_domain_model_news',
+            'action' => 'create',
+            'pid' => $pageUid,
+            'data' => [
+                'title' => 'News with media and related files',
+                'fal_media' => [1],
+                'fal_related_files' => [1],
+            ],
+        ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+        $newsUid = json_decode($result->content[0]->text, true)['uid'];
+
+        $this->assertCount(1, $this->findEffectiveFileReferences('tx_news_domain_model_news', $newsUid, 'fal_media'));
+        $relatedBefore = $this->findEffectiveFileReferences('tx_news_domain_model_news', $newsUid, 'fal_related_files');
+        $this->assertCount(1, $relatedBefore);
+
+        // Drop fal_media, keep fal_related_files untouched
+        $result = $writeTool->execute([
+            'table' => 'tx_news_domain_model_news',
+            'action' => 'update',
+            'uid' => $newsUid,
+            'data' => [
+                'fal_media' => [],
+            ],
+        ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+
+        $this->assertSame(
+            [],
+            $this->findEffectiveFileReferences('tx_news_domain_model_news', $newsUid, 'fal_media'),
+            'The fal_media reference should be gone'
+        );
+        $this->assertSame(
+            $relatedBefore,
+            $this->findEffectiveFileReferences('tx_news_domain_model_news', $newsUid, 'fal_related_files'),
+            'The fal_related_files reference belongs to another field and must survive'
+        );
+    }
+
+    /**
+     * File references of a record field that are still effective: live rows that are
+     * neither deleted nor marked for deletion by a workspace delete placeholder.
+     *
+     * @return int[] sys_file_reference UIDs, ascending
+     */
+    protected function findEffectiveFileReferences(string $table, int $uid, string $field): array
+    {
+        $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getQueryBuilderForTable('sys_file_reference');
+        $queryBuilder->getRestrictions()->removeAll();
+        $referenceUids = $queryBuilder
+            ->select('uid')
+            ->from('sys_file_reference')
+            ->where(
+                $queryBuilder->expr()->eq('tablenames', $queryBuilder->createNamedParameter($table)),
+                $queryBuilder->expr()->eq('fieldname', $queryBuilder->createNamedParameter($field)),
+                $queryBuilder->expr()->eq('uid_foreign', $queryBuilder->createNamedParameter($uid, ParameterType::INTEGER)),
+                $queryBuilder->expr()->eq('t3ver_oid', 0),
+                $queryBuilder->expr()->eq('deleted', 0)
+            )
+            ->orderBy('uid')
+            ->executeQuery()
+            ->fetchFirstColumn();
+
+        $effective = [];
+        foreach ($referenceUids as $referenceUid) {
+            if (!$this->hasWorkspaceDeletePlaceholder((int)$referenceUid)) {
+                $effective[] = (int)$referenceUid;
+            }
+        }
+
+        return $effective;
+    }
+
+    /**
+     * Whether a workspace version marks the given live file reference for deletion.
+     */
+    protected function hasWorkspaceDeletePlaceholder(int $liveUid): bool
+    {
+        $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getQueryBuilderForTable('sys_file_reference');
+        $queryBuilder->getRestrictions()->removeAll();
+
+        return (bool)$queryBuilder
+            ->count('uid')
+            ->from('sys_file_reference')
+            ->where(
+                $queryBuilder->expr()->eq('t3ver_oid', $queryBuilder->createNamedParameter($liveUid, ParameterType::INTEGER)),
+                $queryBuilder->expr()->eq('t3ver_state', $queryBuilder->createNamedParameter(2, ParameterType::INTEGER))
+            )
+            ->executeQuery()
+            ->fetchOne();
     }
 }
