@@ -153,6 +153,27 @@ DataHandler's raw `process_datamap()` does **not** automatically remove children
 
 Both paths go through DataHandler, ensuring proper workspace versioning.
 
+#### Scoping the orphan lookup
+
+Which children currently exist is looked up in the child table, and that lookup **must**
+apply every context column TCA declares:
+
+- `foreign_table_field` → compared against the parent table
+- `foreign_match_fields` → each entry compared against its configured value
+
+This is not optional for shared child tables. `sys_file_reference` holds the rows of every
+file field of every table, and its `foreign_field` (`uid_foreign`) only carries the parent
+UID. Matching on `uid_foreign` alone therefore collects every reference whose parent UID
+happens to be the same number — across unrelated tables and unrelated fields — and those
+rows are then treated as orphans and deleted. UIDs in the low hundreds collide between
+`pages`, `tt_content` and extension tables all the time, so this is the normal case, not an
+edge case.
+
+For TCA type `file` the core fills both keys in `TcaPreparation` (`tablenames` +
+`fieldname`), so they are always available. If they are ever missing for a
+`sys_file_reference` relation, the write is refused with a `ConfigurationException` rather
+than computing a destructive orphan set.
+
 ### File Reference Security
 
 For `sys_file_reference`, context fields are **always set server-side**:

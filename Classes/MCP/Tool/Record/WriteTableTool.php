@@ -7,6 +7,7 @@ namespace Hn\McpServer\MCP\Tool\Record;
 use Doctrine\DBAL\ParameterType;
 use Hn\McpServer\Event\AfterRecordWriteEvent;
 use Hn\McpServer\Event\BeforeRecordWriteEvent;
+use Hn\McpServer\Exception\ConfigurationException;
 use Hn\McpServer\Exception\DatabaseException;
 use Hn\McpServer\Exception\ValidationException;
 use Hn\McpServer\Service\LanguageService;
@@ -1004,6 +1005,12 @@ class WriteTableTool extends AbstractRecordTool
      * This method explicitly builds cmdMap entries to delete embedded children (hideTable)
      * or unlink independent children (clear foreign_field) that are absent from the new list.
      *
+     * The lookup of existing children MUST be scoped by every context column TCA
+     * declares (foreign_table_field, foreign_match_fields). Shared child tables such as
+     * sys_file_reference hold rows for many parent tables at once, and their foreign_field
+     * only carries the parent UID — so an unscoped lookup matches foreign records whose
+     * parent UID collides and marks them as orphans.
+     *
      * @param array &$dataMap The dataMap (read to extract new child identifiers per field)
      * @param array &$cmdMap The cmdMap to add deletion commands to
      * @param string $parentTable The parent table name
@@ -1024,6 +1031,40 @@ class WriteTableTool extends AbstractRecordTool
 
             if (empty($foreignTable) || empty($foreignField)) {
                 continue;
+            }
+
+            // Conditions that scope the lookup to THIS parent table and field.
+            // Child tables shared by many parents — sys_file_reference above all —
+            // keep that context in extra columns, and TCA declares them through
+            // foreign_table_field and foreign_match_fields. For TCA type "file" the
+            // core fills both (TcaPreparation: tablenames + fieldname).
+            // They are not optional: matching on foreign_field alone collects every
+            // child row whose parent UID happens to equal this one, no matter which
+            // table that parent lives in — and those rows are then treated as
+            // orphans and deleted.
+            $contextConditions = [];
+            if (!empty($config['foreign_table_field'])) {
+                $contextConditions[$config['foreign_table_field']] = $parentTable;
+            }
+            foreach (($config['foreign_match_fields'] ?? []) as $matchField => $matchValue) {
+                $contextConditions[$matchField] = $matchValue;
+            }
+
+            // sys_file_reference is shared by every file field of every table, so an
+            // unscoped lookup cannot distinguish this field's references from anyone
+            // else's. Refuse the write instead of computing a destructive orphan set.
+            if ($foreignTable === 'sys_file_reference' && $contextConditions === []) {
+                throw new ConfigurationException(
+                    'TCA',
+                    sprintf(
+                        'Field "%s.%s" points to sys_file_reference but declares neither '
+                        . 'foreign_table_field nor foreign_match_fields. Existing references '
+                        . 'cannot be scoped to this field, so orphan detection would delete '
+                        . 'references belonging to other records.',
+                        $parentTable,
+                        $fieldName
+                    )
+                );
             }
 
             // Determine which existing UIDs are in the new list
@@ -1054,17 +1095,25 @@ class WriteTableTool extends AbstractRecordTool
                 ->removeAll()
                 ->add(GeneralUtility::makeInstance(DeletedRestriction::class));
 
+            $conditions = [
+                $queryBuilder->expr()->eq(
+                    $foreignField,
+                    $queryBuilder->createNamedParameter($parentLiveUid, ParameterType::INTEGER)
+                ),
+                // Only live records (not workspace overlays which have t3ver_oid > 0)
+                $queryBuilder->expr()->eq('t3ver_oid', 0),
+            ];
+            foreach ($contextConditions as $contextColumn => $contextValue) {
+                $conditions[] = $queryBuilder->expr()->eq(
+                    $contextColumn,
+                    $queryBuilder->createNamedParameter($contextValue)
+                );
+            }
+
             $existingChildren = $queryBuilder
                 ->select('uid')
                 ->from($foreignTable)
-                ->where(
-                    $queryBuilder->expr()->eq(
-                        $foreignField,
-                        $queryBuilder->createNamedParameter($parentLiveUid, ParameterType::INTEGER)
-                    ),
-                    // Only live records (not workspace overlays which have t3ver_oid > 0)
-                    $queryBuilder->expr()->eq('t3ver_oid', 0)
-                )
+                ->where(...$conditions)
                 ->executeQuery()
                 ->fetchAllAssociative();
 
