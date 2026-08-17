@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- WriteTable no longer deletes file references of unrelated records when a
+  file field is updated. The lookup for a record's existing inline children
+  matched on `foreign_field` alone, so every `sys_file_reference` row whose
+  `uid_foreign` happened to equal the parent UID was collected — across
+  unrelated tables and unrelated fields — and deleted as an orphan. The
+  lookup now applies the context columns TCA declares
+  (`foreign_table_field`, `foreign_match_fields`) and refuses the write with
+  a ConfigurationException if a `sys_file_reference` relation cannot be
+  scoped at all.
 - WriteTable no longer silently drops non-`settings` FlexForm subtrees
   (e.g. `{"persistence": {"storagePid": "..."}}`): ALL nested subtrees are
   dot-flattened and every field is stored in the sheet its DataStructure
