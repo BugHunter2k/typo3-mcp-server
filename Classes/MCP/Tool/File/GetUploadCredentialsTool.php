@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\MCP\Tool\File;
 
+use Hn\McpServer\Http\RequestUrlTrait;
 use Hn\McpServer\MCP\Tool\Record\AbstractRecordTool;
 use Hn\McpServer\MCP\Tool\RequestAwareToolInterface;
 use Hn\McpServer\Service\BaseUrlService;
@@ -22,6 +23,8 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
  */
 class GetUploadCredentialsTool extends AbstractRecordTool implements RequestAwareToolInterface
 {
+    use RequestUrlTrait;
+
     private const DEFAULT_MAX_SIZE = 52428800; // 50 MB
     private const TOKEN_EXPIRY_SECONDS = 300; // 5 minutes
 
@@ -107,9 +110,9 @@ class GetUploadCredentialsTool extends AbstractRecordTool implements RequestAwar
         $token = bin2hex(random_bytes(32));
         $tokenHash = hash('sha256', $token);
 
-        // Resolve base URL via service (request-aware, with site validation)
+        // Resolve base URL from the request (subdirectory-aware); fall back to site configuration
         if ($this->request !== null) {
-            $baseUrl = $this->baseUrlService->getBaseUrl($this->request);
+            $baseUrl = $this->getRequestBaseUrl($this->request);
         } else {
             $baseUrl = $this->baseUrlService->getBaseUrlFromSiteConfiguration();
         }

@@ -26,6 +26,12 @@ services:
       - name: 'console.command'
         command: 'mcp:oauth'
         description: 'Manage OAuth tokens for MCP server'
+
+  Hn\McpServer\Command\DomainsCommand:
+    tags:
+      - name: 'console.command'
+        command: 'mcp:domains'
+        description: 'List all site domains (base + baseVariants) as JSON for the MCP gateway .mcp.json'
         
   # Make ToolRegistry public for eID access
   Hn\McpServer\MCP\ToolRegistry:
@@ -55,22 +61,35 @@ services:
   Hn\McpServer\Server\SiteInstructionsService:
     public: true
 
-  # Public for runtime container lookups in McpEndpoint (WWW-Authenticate header)
-  # and GeneralUtility::makeInstance() calls in OAuthManageCommand / PreviewFileTool
+  # Public for GeneralUtility::makeInstance() calls in OAuthManageCommand / PreviewFileTool
   Hn\McpServer\Service\BaseUrlService:
     public: true
 
-  # OAuth/.well-known endpoints invoked via GeneralUtility::makeInstance() in
-  # McpServerMiddleware. They have a BaseUrlService constructor dependency, so
-  # makeInstance must resolve them through the container instead of falling back
-  # to argument-less `new`.
-  Hn\McpServer\Http\OAuthAuthServerMetadataEndpoint:
-    public: true
-  Hn\McpServer\Http\OAuthMetadataEndpoint:
-    public: true
-  Hn\McpServer\Http\OAuthResourceMetadataEndpoint:
-    public: true
-    
+
+  # Event listeners
+  Hn\McpServer\EventListener\FileEnrichmentListener:
+    tags:
+      - name: event.listener
+        event: Hn\McpServer\Event\AfterSchemaLoadEvent
+        method: onSchemaLoad
+        identifier: 'mcp-server/file-enrichment-schema'
+      - name: event.listener
+        event: Hn\McpServer\Event\AfterRecordReadEvent
+        method: onRecordRead
+        identifier: 'mcp-server/file-enrichment-read'
+
+  Hn\McpServer\EventListener\SysFileMountRestrictionListener:
+    tags:
+      - name: event.listener
+        event: Hn\McpServer\Event\BeforeRecordReadEvent
+        identifier: 'mcp-server/sys-file-mount-restriction'
+
+  Hn\McpServer\EventListener\SysFileMetadataRestrictionListener:
+    tags:
+      - name: event.listener
+        event: Hn\McpServer\Event\BeforeRecordReadEvent
+        identifier: 'mcp-server/sys-file-metadata-restriction'
+
   # Explicitly configure the module controller
   Hn\McpServer\Controller\McpServerModuleController:
     public: true

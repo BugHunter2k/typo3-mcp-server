@@ -10,11 +10,13 @@ use Hn\McpServer\Event\BeforeRecordWriteEvent;
 use Hn\McpServer\Exception\ConfigurationException;
 use Hn\McpServer\Exception\DatabaseException;
 use Hn\McpServer\Exception\ValidationException;
+use Hn\McpServer\Service\FlexFormStructureService;
 use Hn\McpServer\Service\LanguageService;
 use Mcp\Types\CallToolResult;
 use Psr\EventDispatcher\EventDispatcherInterface;
 use TYPO3\CMS\Backend\Utility\BackendUtility;
 use TYPO3\CMS\Core\DataHandling\DataHandler;
+use TYPO3\CMS\Core\Configuration\FlexForm\FlexFormTools;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Database\Query\Restriction\DeletedRestriction;
@@ -51,15 +53,18 @@ class WriteTableTool extends AbstractRecordTool
                 'INLINE RELATIONS (CRITICAL): On update, passing an inline field REPLACES ALL existing children — omitted children are deleted (embedded) or unlinked (independent). ' .
                 'To keep existing children, include their UIDs: [2546, 2547, {"CType": "textmedia", "header": "New"}]. To update an existing child: {"uid": 2546, "header": "Updated"}. Order in the array defines sorting. ' .
                 'Nested inline relations are supported: child record data may itself contain inline arrays. ' .
-                'FLEXFORM FIELDS: Pass as JSON objects (auto-converted to XML). Use "settings.fieldName" keys for plugin settings. ' .
+                'FLEXFORM FIELDS: Pass as nested JSON objects (auto-converted to XML), e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}}. ' .
+                'The value is a PARTIAL PATCH: fields not included keep their stored values. Each field must be declared by the record type\'s FlexForm schema (see GetFlexFormSchema) — unknown fields are rejected. ' .
                 'ORDERING: When creating multiple elements on a page, chain positions: create first with "bottom", then "after:{uid}" for each next. ' .
+                'RTE LINKS (bodytext): Use TYPO3 link syntax — "t3://page?uid=<pageId>" for pages, "t3://page?uid=<pageId>#c<uid>" to jump to a content element (frontend anchors are id="c<uid>"; GetPage lists them). ' .
                 'Before creating content, use GetPage + ReadTable to understand page structure and existing content.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
                     'action' => [
                         'type' => 'string',
-                        'description' => 'Action to perform: "create", "update", "move", "translate", or "delete"',
+                        'description' => 'Action to perform: "create", "update", "move", "translate", or "delete". ' .
+                            '"delete" only STAGES the deletion in the workspace (a delete placeholder) — nothing is removed from the live site until the workspace is published, so a delete is reversible until then.',
                         'enum' => ['create', 'update', 'move', 'translate', 'delete'],
                     ],
                     'table' => [
@@ -83,7 +88,8 @@ class WriteTableTool extends AbstractRecordTool
                             'FILE FIELDS (image, media, assets): Array of sys_file UIDs [3, 4] or objects [{"uid_local": 3, "title": "...", "alternative": "...", "description": "Caption"}]. ' .
                             'SEARCH-AND-REPLACE (update only): For text/input/email/link/slug fields, pass [{"search": "old", "replace": "new"}] instead of full text. ' .
                             'Add "replaceAll": true per operation if search may match multiple times. Only these field types support search-and-replace. ' .
-                            'FLEXFORM: Pass as JSON object with "settings.fieldName" keys — auto-converted to XML.',
+                            'FLEXFORM: Pass as nested JSON object, e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}} — auto-converted to XML. ' .
+                            'Partial patch semantics: omitted FlexForm fields keep their stored values; fields must exist in the FlexForm schema (GetFlexFormSchema).',
                         'additionalProperties' => true,
                         'examples' => [
                             ['title' => 'News Title', 'bodytext' => 'News <b>content</b>', 'datetime' => '2024-01-01 10:00:00'],
@@ -107,7 +113,13 @@ class WriteTableTool extends AbstractRecordTool
             ],
             'annotations' => [
                 'readOnlyHint' => false,
-                'idempotentHint' => false
+                'idempotentHint' => false,
+                // Absent destructiveHint defaults to TRUE per MCP spec, which
+                // makes cautious clients refuse delete calls outright. Every
+                // write (deletes included) is only staged in a workspace and
+                // touches nothing live until published — so the tool call
+                // itself is not destructive.
+                'destructiveHint' => false
             ]
         ];
     }
@@ -125,6 +137,22 @@ class WriteTableTool extends AbstractRecordTool
         $uid = isset($params['uid']) ? (int)$params['uid'] : null;
         $data = $params['data'] ?? [];
         $position = $params['position'] ?? 'bottom';
+        // Whether the caller explicitly passed a position. The 'bottom' default above
+        // is only meaningful for create/move; on update we must not reorder unless the
+        // caller asked for it (or is moving the record to another page via data.pid).
+        $positionProvided = array_key_exists('position', $params);
+
+        // The schema documents the target page as `pid` inside `data`. Older callers
+        // (and LLMs trained on prior versions) pass a top-level `pid`; fold a stray one
+        // into data so data is the single source of truth. Deriving $pid from data lets a
+        // BeforeRecordWriteEvent listener reroute a create by changing data['pid'], and
+        // lets an update move the record to another page via data['pid'].
+        if ($pid !== null && is_array($data) && !array_key_exists('pid', $data)) {
+            $data['pid'] = $pid;
+        }
+        if (is_array($data) && isset($data['pid'])) {
+            $pid = (int)$data['pid'];
+        }
 
         // Validate parameters
         if (empty($action)) {
@@ -182,8 +210,11 @@ class WriteTableTool extends AbstractRecordTool
                 if ($pid === null) {
                     throw new ValidationException(['Page ID (pid) is required for create action']);
                 }
-                
-                if (empty($data)) {
+
+                // pid now lives in data; a create still needs at least one record field
+                // beyond the target page.
+                $createFields = is_array($data) ? array_diff_key($data, ['pid' => true]) : [];
+                if (empty($createFields)) {
                     throw new ValidationException(['Data is required for create action']);
                 }
                 break;
@@ -193,7 +224,10 @@ class WriteTableTool extends AbstractRecordTool
                     throw new ValidationException(['Record UID is required for update action']);
                 }
 
-                if (empty($data) && empty($searchReplace)) {
+                // A move-only update (reorder via "position", or move to another page
+                // via data.pid) carries no field data and is still valid.
+                $movesRecord = $positionProvided || (is_array($data) && array_key_exists('pid', $data));
+                if (empty($data) && empty($searchReplace) && !$movesRecord) {
                     throw new ValidationException(['Data is required for update action']);
                 }
                 break;
@@ -243,6 +277,14 @@ class WriteTableTool extends AbstractRecordTool
         }
         $data = $beforeEvent->getData();
 
+        // A BeforeRecordWriteEvent listener may have changed data['pid'] (e.g. to reroute
+        // a create to a different page). Re-derive the create target from the post-event
+        // data and remove it so createRecord receives only record fields.
+        if ($action === 'create' && is_array($data) && array_key_exists('pid', $data)) {
+            $pid = (int)$data['pid'];
+            unset($data['pid']);
+        }
+
         // Execute the action
         switch ($action) {
             case 'create':
@@ -254,8 +296,8 @@ class WriteTableTool extends AbstractRecordTool
                     $resolvedFields = $this->resolveSearchReplace($table, $uid, $searchReplace);
                     $data = array_merge($data, $resolvedFields);
                 }
-                return $this->updateRecord($table, $uid, $data);
-                
+                return $this->updateRecord($table, $uid, $data, $positionProvided ? $position : null);
+
             case 'move':
                 return $this->moveRecord($table, $uid, $position, $pid);
 
@@ -294,7 +336,7 @@ class WriteTableTool extends AbstractRecordTool
         }
 
         // Validate the data
-        $validationResult = $this->validateRecordData($table, $data, 'create');
+        $validationResult = $this->validateRecordData($table, $data, 'create', null, $pid);
         if ($validationResult !== true) {
             return $this->createErrorResult('Validation error: ' . $validationResult);
         }
@@ -303,7 +345,7 @@ class WriteTableTool extends AbstractRecordTool
         $inlineRelations = $this->extractInlineRelations($table, $data);
 
         // Convert data for storage
-        $data = $this->convertDataForStorage($table, $data);
+        $data = $this->convertDataForStorage($table, $data, null);
 
         // Prepare the data array
         $newRecordData = $data;
@@ -374,10 +416,22 @@ class WriteTableTool extends AbstractRecordTool
     /**
      * Update an existing record
      */
-    protected function updateRecord(string $table, int $uid, array $data): CallToolResult
+    protected function updateRecord(string $table, int $uid, array $data, ?string $position = null): CallToolResult
     {
-        // Validate the data
-        $validationResult = $this->validateRecordData($table, $data, 'update', $uid);
+        // A `pid` inside the update data is not a regular field — it requests a move to
+        // another page, routed through DataHandler's move command after the field update.
+        // Extract it before validation so the "unknown field" guard does not reject it.
+        $targetPid = null;
+        if (array_key_exists('pid', $data)) {
+            $targetPid = (int)$data['pid'];
+            unset($data['pid']);
+        }
+        $moveRequested = $targetPid !== null || $position !== null;
+
+        // Validate the data. The record's effective pid (the move target, or its current
+        // page) drives dynamic select-item resolution (e.g. colPos by backend layout).
+        $contextPid = $targetPid ?? (int)(BackendUtility::getRecord($table, $uid, 'pid')['pid'] ?? 0);
+        $validationResult = $this->validateRecordData($table, $data, 'update', $uid, $contextPid);
         if ($validationResult !== true) {
             return $this->createErrorResult('Validation error: ' . $validationResult);
         }
@@ -385,15 +439,17 @@ class WriteTableTool extends AbstractRecordTool
         // Extract inline relations and build unified dataMap
         $inlineRelations = $this->extractInlineRelations($table, $data);
 
+        // Resolve the live UID to workspace UID (once, used throughout).
+        // Must happen before convertDataForStorage: FlexForm conversion loads
+        // the workspace version of the record to merge with the current value.
+        $workspaceUid = $this->resolveToWorkspaceUid($table, $uid);
+
         // Convert data for storage
-        $data = $this->convertDataForStorage($table, $data);
+        $data = $this->convertDataForStorage($table, $data, $workspaceUid);
 
         // For translation records, add l10n_state overrides so DataHandler treats
         // explicitly updated fields as "custom" (not synced from parent)
         $data = $this->ensureL10nStateForTranslation($table, $uid, $data);
-
-        // Resolve the live UID to workspace UID (once, used throughout)
-        $workspaceUid = $this->resolveToWorkspaceUid($table, $uid);
 
         // Build unified dataMap: parent update + all inline children
         $dataMap = [$table => [$workspaceUid => $data]];
@@ -425,7 +481,29 @@ class WriteTableTool extends AbstractRecordTool
         if (!empty($dataHandler->errorLog)) {
             return $this->createErrorResult('Error updating record: ' . implode(', ', $dataHandler->errorLog));
         }
-        
+
+        // Move/reorder the record if requested. data.pid moves it to another page; an
+        // explicit position reorders it. With a pid but no position, the record lands at
+        // the top of the target page.
+        if ($moveRequested) {
+            $movePid = $targetPid;
+            if ($movePid === null) {
+                $currentRecord = BackendUtility::getRecord($table, $workspaceUid, 'pid');
+                $movePid = (int)($currentRecord['pid'] ?? 0);
+            }
+            // DataHandler rejects impossible moves (e.g. a page into itself). It surfaces
+            // these as errorLog entries, but a rejected move can also trip a core warning;
+            // translate either outcome into a clean "Error moving record" result.
+            try {
+                $moveError = $this->applyPosition($table, $workspaceUid, $movePid, $position ?? 'top');
+            } catch (\Throwable $moveException) {
+                $moveError = $moveException->getMessage();
+            }
+            if ($moveError !== null) {
+                return $this->createErrorResult('Error moving record: ' . $moveError);
+            }
+        }
+
         // Dispatch AfterRecordWriteEvent
         $eventDispatcher = GeneralUtility::makeInstance(EventDispatcherInterface::class);
         $eventDispatcher->dispatch(new AfterRecordWriteEvent($table, 'update', $uid, $data, null));
@@ -721,11 +799,11 @@ class WriteTableTool extends AbstractRecordTool
      * @param int|null $uid Record UID (required for update actions)
      * @return true|string True if valid, error message if invalid
      */
-    protected function validateRecordData(string $table, array &$data, string $action, ?int $uid = null)
+    protected function validateRecordData(string $table, array &$data, string $action, ?int $uid = null, ?int $pid = null)
     {
         // Table access has already been validated by ensureTableAccess() before this method is called
         // No need to re-check table existence here
-        
+
         // Special handling for uid and pid
         if (isset($data['uid'])) {
             return "Field 'uid' cannot be modified directly";
@@ -733,12 +811,49 @@ class WriteTableTool extends AbstractRecordTool
         if (isset($data['pid']) && $action !== 'create') {
             return "Field 'pid' can only be set during record creation";
         }
-        
+
+        // Build a record context for dynamic select-item resolution. TSconfig- and
+        // backend-layout-driven items (e.g. tt_content.colPos, CType disableCTypes) only
+        // resolve correctly when the target pid and sibling field values are known.
+        $recordContext = [];
+        if ($pid !== null) {
+            $recordContext['pid'] = $pid;
+        }
+        foreach ($data as $contextKey => $contextValue) {
+            if (!is_array($contextValue)) {
+                $recordContext[$contextKey] = $contextValue;
+            }
+        }
+
+        // TYPO3 control fields have no TCA columns entry but are still writable
+        // (DataHandler handles them). Allow them so the "unknown field" guard below
+        // only rejects genuine typos, not e.g. an explicit sorting value.
+        $ctrl = $GLOBALS['TCA'][$table]['ctrl'] ?? [];
+        $controlFields = array_filter([
+            'pid', 'sorting',
+            $ctrl['sortby'] ?? null,
+            $ctrl['tstamp'] ?? null,
+            $ctrl['crdate'] ?? null,
+            $ctrl['languageField'] ?? null,
+            $ctrl['transOrigPointerField'] ?? null,
+            $ctrl['translationSource'] ?? null,
+        ]);
+        foreach (($ctrl['enablecolumns'] ?? []) as $enableColumn) {
+            $controlFields[] = $enableColumn;
+        }
+
         // Validate and convert field values
         foreach ($data as $fieldName => $value) {
             $fieldConfig = $this->tableAccessService->getFieldConfig($table, $fieldName);
             if (!$fieldConfig) {
-                continue;
+                if (in_array((string)$fieldName, $controlFields, true)) {
+                    // Writable control field (sorting, language, timestamps, …) — let
+                    // DataHandler handle it; no TCA columns validation applies.
+                    continue;
+                }
+                // A field without a TCA columns entry would be silently dropped by
+                // DataHandler — reject it so typos surface instead of vanishing.
+                return "Field '{$fieldName}' does not exist in table '{$table}'";
             }
 
             // Check if field is accessible (filters out inaccessible inline relations)
@@ -747,9 +862,20 @@ class WriteTableTool extends AbstractRecordTool
             }
 
             // Validate field value
-            $validationError = $this->tableAccessService->validateFieldValue($table, $fieldName, $value);
+            $validationError = $this->tableAccessService->validateFieldValue($table, $fieldName, $value, $recordContext);
             if ($validationError !== null) {
                 return $validationError;
+            }
+
+            // Enforce TCEMAIN.table.tt_content.disableCTypes. The New Content Element
+            // Wizard reads this, but FormDataCompiler does not — so disabled content
+            // types still pass the generic select validation above and must be caught here.
+            if ($table === 'tt_content' && $fieldName === 'CType' && $pid !== null) {
+                $tsConfig = BackendUtility::getPagesTSconfig($pid);
+                $disabledCTypes = $tsConfig['TCEMAIN.']['table.']['tt_content.']['disableCTypes'] ?? '';
+                if ($disabledCTypes !== '' && in_array((string)$value, GeneralUtility::trimExplode(',', $disabledCTypes, true), true)) {
+                    return "CType '{$value}' is disabled via TCEMAIN.table.tt_content.disableCTypes and cannot be used on this page";
+                }
             }
 
             // Handle date/time fields - convert ISO 8601 to timestamp for TYPO3
@@ -818,7 +944,25 @@ class WriteTableTool extends AbstractRecordTool
                 $availableFields[$typeField] = $typeFieldConfig;
             }
         }
-        
+
+        // The language field (ctrl.languageField, e.g. sys_language_uid) is a control
+        // field the MCP manages itself: it is converted from ISO codes, set by the
+        // translate action, and defaulted for non-admin permission checks (see
+        // ensureLanguageField()). TYPO3 does not list it in the showitem of every
+        // language-aware table — most notably `pages`, where translations are handled by
+        // the dedicated localize workflow instead of by editing the field. As of TYPO3
+        // 13.3 the field is even auto-injected into content-type showitems but never into
+        // pages (feature #104814). Without this, getAvailableFields() (derived from the
+        // showitem) would omit it and validation would wrongly reject a value the MCP
+        // itself added. Treat it as always available, mirroring the type field. (#94)
+        $languageField = $this->tableAccessService->getLanguageFieldName($table);
+        if ($languageField) {
+            $languageFieldConfig = $this->tableAccessService->getFieldConfig($table, $languageField);
+            if ($languageFieldConfig) {
+                $availableFields[$languageField] = $languageFieldConfig;
+            }
+        }
+
         // If we have type-specific configuration, validate field availability
         if (!empty($availableFields) || !empty($typeField)) {
             // Check each field in data is available
@@ -936,9 +1080,15 @@ class WriteTableTool extends AbstractRecordTool
                     $existingUid = (int)$item['uid'];
                     unset($item['uid'], $item[$foreignField]);
 
-                    // If additional fields provided, add as update to dataMap
+                    // If additional fields provided, add as update to dataMap.
+                    // Run field conversions (e.g. JSON-encode imageManipulation/crop)
+                    // so patches to existing file references survive the round trip.
                     if (!empty($item)) {
-                        $dataMap[$foreignTable][$existingUid] = $item;
+                        $dataMap[$foreignTable][$existingUid] = $this->convertDataForStorage(
+                            $foreignTable,
+                            $item,
+                            $this->resolveToWorkspaceUid($foreignTable, $existingUid)
+                        );
                     }
 
                     $childIdentifiers[] = $existingUid;
@@ -959,6 +1109,12 @@ class WriteTableTool extends AbstractRecordTool
 
                     // Recursively handle nested inline relations in the child record
                     $nestedInlineRelations = $this->extractInlineRelations($foreignTable, $item);
+
+                    // Run field conversions on the remaining scalar fields (e.g. JSON-encode
+                    // imageManipulation/crop) so embedded children like sys_file_reference
+                    // survive the round trip with ReadTableTool.
+                    $item = $this->convertDataForStorage($foreignTable, $item, null);
+
                     if (!empty($nestedInlineRelations)) {
                         // Add child to dataMap first so buildInlineDataMap can reference it
                         $dataMap[$foreignTable][$childNewId] = $item;
@@ -1164,6 +1320,11 @@ class WriteTableTool extends AbstractRecordTool
                     continue;
                 }
                 if (is_array($item)) {
+                    // Patching an existing reference by uid (e.g. updating crop only) does
+                    // not need uid_local — the sys_file link is already established.
+                    if (isset($item['uid']) && is_numeric($item['uid']) && (int)$item['uid'] > 0) {
+                        continue;
+                    }
                     if (empty($item['uid_local']) || !is_numeric($item['uid_local'])) {
                         return 'File reference at index ' . $index . ' must contain uid_local (sys_file UID)';
                     }
@@ -1388,9 +1549,15 @@ class WriteTableTool extends AbstractRecordTool
     }
 
     /**
-     * Convert data for storage
+     * Convert data for storage.
+     *
+     * @param int|null $recordUid Workspace UID of the record being updated,
+     *                            or null when creating a new record. FlexForm
+     *                            conversion uses it to load the current record
+     *                            for DataStructure resolution and to merge the
+     *                            incoming partial value with the stored one.
      */
-    protected function convertDataForStorage(string $table, array $data): array
+    protected function convertDataForStorage(string $table, array $data, ?int $recordUid): array
     {
         // Process each field
         foreach ($data as $fieldName => $value) {
@@ -1409,6 +1576,15 @@ class WriteTableTool extends AbstractRecordTool
                 $data[$fieldName] = '/' . trim($value, '/');
             }
 
+            // imageManipulation (e.g. sys_file_reference.crop) is stored as a JSON string.
+            // DataHandler treats the type as passthrough, so an array value gets cast to the
+            // literal string "Array" on the way to the DB. Encode here so the round trip with
+            // ReadTableTool (which json_decodes the value back into an array) is symmetric.
+            if ($fieldConfig && ($fieldConfig['config']['type'] ?? '') === 'imageManipulation' && is_array($value)) {
+                $data[$fieldName] = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                continue;
+            }
+
             // Handle FlexForm fields
             if ($this->isFlexFormField($table, $fieldName)) {
                 // If the value is already a string (XML), keep it as is
@@ -1418,47 +1594,168 @@ class WriteTableTool extends AbstractRecordTool
                 
                 // If the value is an array or JSON string, convert it to XML
                 $flexFormArray = is_array($value) ? $value : (is_string($value) && strpos($value, '{') === 0 ? json_decode($value, true) : null);
-                
-                if (is_array($flexFormArray)) {
-                    // Prepare the data structure for TYPO3's XML conversion
-                    $flexFormData = [
-                        'data' => [
-                            'sDEF' => [
-                                'lDEF' => []
-                            ]
-                        ]
-                    ];
-                    
-                    // Process settings fields — flatten nested arrays with dot notation.
-                    // TYPO3 FlexForm fields use dotted paths (e.g. "settings.filter.newsTypes")
-                    // which the Extbase settings parser un-nests back into $settings['filter']['newsTypes'].
-                    // Without dot-flattening, array2xml concatenates the keys without a separator,
-                    // producing unreadable fields like "settingsfilternewsTypes".
-                    if (isset($flexFormArray['settings']) && is_array($flexFormArray['settings'])) {
-                        foreach ($this->flattenFlexFormSettings($flexFormArray['settings'], 'settings') as $flatKey => $leafValue) {
-                            $flexFormData['data']['sDEF']['lDEF'][$flatKey]['vDEF'] = $leafValue;
-                        }
-                    }
 
-                    // Process other top-level scalar fields (non-settings, non-arrays)
-                    foreach ($flexFormArray as $key => $val) {
-                        if ($key !== 'settings' && !is_array($val)) {
-                            $flexFormData['data']['sDEF']['lDEF'][$key]['vDEF'] = $val;
-                        }
-                    }
-                    
-                    // Use TYPO3's GeneralUtility::array2xml to convert the array to XML
-                    $xml = '<?xml version="1.0" encoding="utf-8" standalone="yes" ?>' . "\n";
-                    $xml .= GeneralUtility::array2xml($flexFormData, '', 0, 'T3FlexForms');
-                    
-                    $data[$fieldName] = $xml;
+                if (is_array($flexFormArray)) {
+                    $data[$fieldName] = $this->convertFlexFormValueForStorage($table, $fieldName, $flexFormArray, $recordUid, $data);
                 }
             }
         }
         
         return $data;
     }
-    
+
+    /**
+     * Convert a FlexForm JSON/array value into the XML DataHandler stores.
+     *
+     * The incoming value is a PARTIAL PATCH, not a full replacement: the
+     * record's current FlexForm value is loaded (workspace version — the
+     * caller passes the workspace UID), the incoming dotted-path values are
+     * overlaid, and the merged set is serialized. DataHandler's own
+     * merge-with-current logic only runs for array input; this tool passes
+     * pre-serialized XML strings, which DataHandler stores as-is — without
+     * this merge, updating one FlexForm field would delete all others.
+     *
+     * Every field is placed into the sheet its DataStructure declares it in
+     * (FormEngine renders per-sheet backend tabs, and EXT:form injects
+     * finisher-override fields under dynamically created sheet keys). ALL
+     * nested subtrees are dot-flattened — not only `settings`: a value like
+     * {"persistence": {"storagePid": "1"}} becomes the FlexForm field
+     * "persistence.storagePid". Fields the DataStructure does not declare
+     * are rejected with an explicit error instead of being silently dropped.
+     *
+     * @param array<string, mixed> $value Decoded FlexForm value from the client
+     * @param int|null $recordUid Workspace UID on update, null on create
+     * @param array<string, mixed> $pendingData Full pending write payload — its
+     *                             pointer fields (e.g. a CType change in the
+     *                             same request) win over the stored record when
+     *                             resolving the DataStructure
+     */
+    protected function convertFlexFormValueForStorage(
+        string $table,
+        string $fieldName,
+        array $value,
+        ?int $recordUid,
+        array $pendingData
+    ): string {
+        $currentRecord = $recordUid !== null ? BackendUtility::getRecord($table, $recordUid) : null;
+        $currentXml = is_string($currentRecord[$fieldName] ?? null) ? $currentRecord[$fieldName] : '';
+
+        // Row context for DataStructure resolution: stored record merged with
+        // the pending payload (pending wins — covers CType changes in the same
+        // request). The FlexForm field itself must stay the stored XML string:
+        // DS events (EXT:form) read it to locate the persistenceIdentifier.
+        $row = array_merge($currentRecord ?? [], $pendingData);
+        $row[$fieldName] = $currentXml;
+
+        $structureService = GeneralUtility::makeInstance(FlexFormStructureService::class);
+        $structure = $structureService->resolveDataStructureForRecord($table, $fieldName, $row);
+        if ($structure === null) {
+            throw new ValidationException([
+                "Cannot resolve the FlexForm data structure for $table.$fieldName. "
+                . 'The record type (e.g. CType) does not declare a FlexForm schema, so JSON FlexForm values cannot be mapped. '
+                . 'Use GetFlexFormSchema to inspect available structures.',
+            ]);
+        }
+        $fieldSheetMap = $structureService->getFieldSheetMap($structure);
+
+        // Validate the incoming fields against the DataStructure before merging
+        $incomingValues = [];
+        foreach ($value as $key => $subValue) {
+            if (is_array($subValue)) {
+                $incomingValues += $this->flattenFlexFormSettings($subValue, (string)$key);
+            } else {
+                $incomingValues[(string)$key] = $subValue;
+            }
+        }
+        foreach (array_keys($incomingValues) as $flatKey) {
+            if (!isset($fieldSheetMap[$flatKey])) {
+                throw new ValidationException([
+                    "Unknown FlexForm field \"$flatKey\" for $table.$fieldName: the resolved data structure does not declare it. "
+                    . 'Available fields: ' . implode(', ', array_keys($fieldSheetMap)),
+                ]);
+            }
+            if (count($fieldSheetMap[$flatKey]) > 1) {
+                throw new ValidationException([
+                    "Ambiguous FlexForm field \"$flatKey\" for $table.$fieldName: declared in multiple sheets ("
+                    . implode(', ', $fieldSheetMap[$flatKey]) . ')',
+                ]);
+            }
+        }
+
+        // Merge: current values first (fields known to the DataStructure are
+        // re-placed into their canonical sheet, which also heals values older
+        // tool versions wrote into sDEF unconditionally; unknown leftovers
+        // keep their stored sheet), then the incoming values overlay.
+        $flexFormData = ['data' => []];
+        foreach ($this->extractFlexFormValues($table, $fieldName, $currentXml) as $flatKey => $current) {
+            $sheetKey = $fieldSheetMap[$flatKey][0] ?? $current['sheet'];
+            $flexFormData['data'][$sheetKey]['lDEF'][$flatKey]['vDEF'] = $current['value'];
+        }
+        foreach ($incomingValues as $flatKey => $leafValue) {
+            $flexFormData['data'][$fieldSheetMap[$flatKey][0]]['lDEF'][$flatKey]['vDEF'] = $leafValue;
+        }
+
+        if ($flexFormData['data'] === []) {
+            // Empty patch on an empty value — keep an empty default sheet so
+            // DataHandler stores a valid FlexForm document.
+            $flexFormData['data'] = ['sDEF' => ['lDEF' => []]];
+        }
+
+        // Serialise via TYPO3's FlexFormTools so dotted field names land in the
+        // `index` attribute (<field index="settings.media.maxWidth">) instead of
+        // being collapsed into a dot-less element name by a bare array2xml.
+        $flexFormTools = GeneralUtility::makeInstance(FlexFormTools::class);
+        return $flexFormTools->flexArray2Xml($flexFormData);
+    }
+
+    /**
+     * Extract the stored FlexForm values of a record as a flat map of
+     * dotted field name => ['sheet' => sheet key, 'value' => stored value].
+     *
+     * When the same field name appears in several sheets (older tool versions
+     * wrote every field into sDEF), the last occurrence wins — matching the
+     * read side, where FlexFormService flattens sheets in order.
+     *
+     * @return array<string, array{sheet: string, value: mixed}>
+     */
+    protected function extractFlexFormValues(string $table, string $fieldName, string $currentXml): array
+    {
+        if ($currentXml === '') {
+            return [];
+        }
+
+        $parsed = GeneralUtility::xml2array($currentXml);
+        if (!is_array($parsed)) {
+            // xml2array returns an error string for unparseable XML. Merging
+            // against garbage would silently discard the stored value, so be
+            // explicit; raw XML passthrough can be used to overwrite it.
+            throw new ValidationException([
+                "The stored FlexForm value of $table.$fieldName cannot be parsed ($parsed). "
+                . 'Pass a full FlexForm XML string (starting with <?xml) to replace it.',
+            ]);
+        }
+
+        $values = [];
+        foreach (($parsed['data'] ?? []) as $sheetKey => $languages) {
+            // A sheet without fields is parsed as 'lDEF' => '' (empty string,
+            // not an array) by xml2array — same guard as TYPO3 core's
+            // FlexFormService::convertFlexFormContentToArray().
+            if (!is_array($languages['lDEF'] ?? false)) {
+                continue;
+            }
+            foreach ($languages['lDEF'] as $flatKey => $valueContainer) {
+                if (is_array($valueContainer) && array_key_exists('vDEF', $valueContainer)) {
+                    $values[(string)$flatKey] = [
+                        'sheet' => (string)$sheetKey,
+                        'value' => $valueContainer['vDEF'],
+                    ];
+                }
+            }
+        }
+
+        return $values;
+    }
+
     /**
      * For translation records, set l10n_state to "custom" for fields that
      * have allowLanguageSynchronization enabled and are being explicitly updated.

@@ -7,7 +7,8 @@ namespace Hn\McpServer\Tests\Functional\NewsExtension;
 use Hn\McpServer\MCP\Tool\Record\ReadTableTool;
 use Hn\McpServer\MCP\Tool\Record\WriteTableTool;
 use Hn\McpServer\MCP\Tool\Record\GetFlexFormSchemaTool;
-use TYPO3\CMS\Core\Information\Typo3Version;
+use Hn\McpServer\Service\TableAccessService;
+use Hn\McpServer\Tests\Functional\Traits\PluginContentTrait;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
 
@@ -16,6 +17,8 @@ use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
  */
 class NewsFlexFormTest extends FunctionalTestCase
 {
+    use PluginContentTrait;
+
     protected array $coreExtensionsToLoad = [
         'workspaces',
         'frontend',
@@ -36,22 +39,6 @@ class NewsFlexFormTest extends FunctionalTestCase
     }
 
     /**
-     * Build plugin data for News, version-aware.
-     * In TYPO3 14+, plugins have their own CType (e.g., 'news_pi1').
-     * In TYPO3 13, plugins use CType='list' with list_type field.
-     */
-    private function buildNewsPluginData(array $extraData = []): array
-    {
-        $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
-        if ($typo3Version->getMajorVersion() >= 14) {
-            $data = ['CType' => 'news_pi1'];
-        } else {
-            $data = ['CType' => 'list', 'list_type' => 'news_pi1'];
-        }
-        return array_merge($data, $extraData);
-    }
-
-    /**
      * Test creating a News plugin with comprehensive FlexForm settings
      */
     public function testCreateNewsPluginWithFlexForm(): void
@@ -63,7 +50,8 @@ class NewsFlexFormTest extends FunctionalTestCase
             'table' => 'tt_content',
             'action' => 'create',
             'pid' => 1,
-            'data' => $this->buildNewsPluginData([
+            'data' => [
+                ...$this->buildPluginContentRow('news_pi1'),
                 'header' => 'Latest News',
                 'pi_flexform' => [
                     'settings' => [
@@ -101,12 +89,12 @@ class NewsFlexFormTest extends FunctionalTestCase
                         ]
                     ]
                 ]
-            ]),
+            ],
         ]);
-
+        
         $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
         $pluginUid = json_decode($result->content[0]->text, true)['uid'];
-
+        
         // Read the plugin back
         $readTool = GeneralUtility::makeInstance(ReadTableTool::class);
         $result = $readTool->execute([
@@ -117,15 +105,12 @@ class NewsFlexFormTest extends FunctionalTestCase
         $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
         $plugin = json_decode($result->content[0]->text, true)['records'][0];
         
-        // Verify basic fields
-        $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
-        if ($typo3Version->getMajorVersion() >= 14) {
-            $this->assertEquals('news_pi1', $plugin['CType']);
-        } else {
-            $this->assertEquals('list', $plugin['CType']);
-            if (isset($plugin['list_type'])) {
-                $this->assertEquals('news_pi1', $plugin['list_type']);
-            }
+        // Verify basic fields. CType differs by TYPO3 version: v13 stores
+        // plugins as CType=list with list_type pointing at the plugin.
+        $expectedCType = TableAccessService::hasPluginSubtypes() ? 'list' : 'news_pi1';
+        $this->assertEquals($expectedCType, $plugin['CType']);
+        if (TableAccessService::hasPluginSubtypes()) {
+            $this->assertEquals('news_pi1', $plugin['list_type'] ?? null);
         }
         $this->assertEquals('Latest News', $plugin['header']);
         
@@ -170,7 +155,8 @@ class NewsFlexFormTest extends FunctionalTestCase
             'table' => 'tt_content',
             'action' => 'create',
             'pid' => 1,
-            'data' => $this->buildNewsPluginData([
+            'data' => [
+                ...$this->buildPluginContentRow('news_pi1'),
                 'header' => 'News to Update',
                 'pi_flexform' => [
                     'settings' => [
@@ -179,7 +165,7 @@ class NewsFlexFormTest extends FunctionalTestCase
                         'categories' => '1'
                     ]
                 ]
-            ]),
+            ],
         ]);
         
         $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
@@ -233,24 +219,25 @@ class NewsFlexFormTest extends FunctionalTestCase
     public function testDifferentNewsPluginModes(): void
     {
         $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
+        // Every field must be declared by the news list DataStructure —
+        // undeclared FlexForm fields (like the legacy
+        // switchableControllerActions) are rejected explicitly since the
+        // DS-aware write path.
         $modes = [
             'List' => [
-                'switchableControllerActions' => 'News->list',
                 'limit' => '10',
                 'orderBy' => 'datetime'
             ],
-            'Detail' => [
-                'switchableControllerActions' => 'News->detail',
-                'useStdWrap' => 'singleNews',
-                'singleNews' => '123'
+            'Ordered' => [
+                'orderBy' => 'title',
+                'orderDirection' => 'asc'
             ],
-            'CategoryMenu' => [
-                'switchableControllerActions' => 'Category->list',
-                'categoryMenuStartingpoint' => '1',
-                'categoryMenuShowEmpty' => '1'
+            'Categorized' => [
+                'categories' => '1,2',
+                'categoryConjunction' => 'or'
             ],
-            'TagList' => [
-                'switchableControllerActions' => 'Tag->list',
+            'Paged' => [
+                'hidePagination' => '1',
                 'listPid' => '15'
             ]
         ];
@@ -261,12 +248,13 @@ class NewsFlexFormTest extends FunctionalTestCase
                 'table' => 'tt_content',
                 'action' => 'create',
                 'pid' => 1,
-                'data' => $this->buildNewsPluginData([
+                'data' => [
+                    ...$this->buildPluginContentRow('news_pi1'),
                     'header' => "News Plugin - $modeName Mode",
                     'pi_flexform' => [
                         'settings' => $modeSettings
                     ]
-                ]),
+                ],
             ]);
             
             $this->assertFalse($result->isError, "Failed to create $modeName mode: " . json_encode($result->jsonSerialize()));
@@ -303,10 +291,11 @@ class NewsFlexFormTest extends FunctionalTestCase
             'table' => 'tt_content',
             'action' => 'create',
             'pid' => 1,
-            'data' => $this->buildNewsPluginData([
+            'data' => [
+                ...$this->buildPluginContentRow('news_pi1'),
                 'header' => 'News Plugin with Empty FlexForm',
                 'pi_flexform' => []
-            ]),
+            ],
         ]);
         
         $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
@@ -338,48 +327,34 @@ class NewsFlexFormTest extends FunctionalTestCase
             'table' => 'tt_content',
             'action' => 'create',
             'pid' => 1,
-            'data' => $this->buildNewsPluginData([
+            'data' => [
+                ...$this->buildPluginContentRow('news_pi1'),
                 'header' => 'News Plugin for Schema Test'
-            ]),
+            ],
         ]);
-
+        
         $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
         $pluginUid = json_decode($result->content[0]->text, true)['uid'];
-
-        $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
-
+        
         // Get FlexForm schema
         $schemaTool = GeneralUtility::makeInstance(GetFlexFormSchemaTool::class);
-
-        if ($typo3Version->getMajorVersion() >= 14) {
-            // In TYPO3 14+, FlexForm ds is stored in columnsOverrides per CType,
-            // the identifier is just the CType name
-            $result = $schemaTool->execute([
-                'table' => 'tt_content',
-                'field' => 'pi_flexform',
-                'recordUid' => $pluginUid,
-                'identifier' => 'news_pi1'
-            ]);
-        } else {
-            // In TYPO3 13, FlexForm ds uses multi-entry format with list_type pointer
-            $result = $schemaTool->execute([
-                'table' => 'tt_content',
-                'field' => 'pi_flexform',
-                'recordUid' => $pluginUid,
-                'identifier' => '*,news_pi1'
-            ]);
-        }
-
+        $result = $schemaTool->execute([
+            'table' => 'tt_content',
+            'field' => 'pi_flexform',
+            'recordUid' => $pluginUid,
+            'identifier' => $this->pluginFlexFormIdentifier('news_pi1'),
+        ]);
+        
         $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
         $content = $result->content[0]->text;
-
+        
         // Verify schema contains News-specific settings
         $this->assertStringContainsString('orderBy', $content);
         $this->assertStringContainsString('orderDirection', $content);
         $this->assertStringContainsString('categories', $content);
         $this->assertStringContainsString('detailPid', $content);
         $this->assertStringContainsString('listPid', $content);
-
+        
         // Check for sheet structure
         $this->assertStringContainsString('SHEETS:', $content);
     }
@@ -396,7 +371,8 @@ class NewsFlexFormTest extends FunctionalTestCase
             'table' => 'tt_content',
             'action' => 'create',
             'pid' => 1,
-            'data' => $this->buildNewsPluginData([
+            'data' => [
+                ...$this->buildPluginContentRow('news_pi1'),
                 'header' => 'Workspace FlexForm Test',
                 'pi_flexform' => [
                     'settings' => [
@@ -404,7 +380,7 @@ class NewsFlexFormTest extends FunctionalTestCase
                         'orderBy' => 'title'
                     ]
                 ]
-            ]),
+            ],
         ]);
         
         $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
@@ -450,64 +426,34 @@ class NewsFlexFormTest extends FunctionalTestCase
     {
         $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
         
-        // Create plugin with complex nested structures
+        // Create plugin with nested structures — every dotted path must be
+        // declared by the news DataStructure (undeclared FlexForm fields are
+        // rejected with an explicit error since the DS-aware write path)
         $result = $writeTool->execute([
             'table' => 'tt_content',
             'action' => 'create',
             'pid' => 1,
-            'data' => $this->buildNewsPluginData([
+            'data' => [
+                ...$this->buildPluginContentRow('news_pi1'),
                 'header' => 'Complex FlexForm Test',
                 'pi_flexform' => [
                     'settings' => [
                         'orderBy' => 'datetime',
                         'limit' => '10',
-                        // Nested media configuration
+                        // Nested media configuration (settings.media.maxWidth/maxHeight)
                         'media' => [
-                            'image' => [
-                                'maxWidth' => '1200',
-                                'maxHeight' => '800',
-                                'lightbox' => [
-                                    'enabled' => '1',
-                                    'class' => 'lightbox',
-                                    'width' => '1920',
-                                    'height' => '1080'
-                                ]
-                            ],
-                            'video' => [
-                                'width' => '16',
-                                'height' => '9',
-                                'autoplay' => '0'
-                            ]
+                            'maxWidth' => '1200',
+                            'maxHeight' => '800',
                         ],
-                        // List view configuration
+                        // Three-level nesting (settings.list.paginate.itemsPerPage)
                         'list' => [
-                            'media' => [
-                                'dummyImage' => '1',
-                                'image' => [
-                                    'maxWidth' => '400',
-                                    'maxHeight' => '300'
-                                ]
-                            ],
                             'paginate' => [
                                 'itemsPerPage' => '10',
-                                'insertAbove' => '1',
-                                'insertBelow' => '1',
-                                'maximumNumberOfLinks' => '5'
-                            ]
-                        ],
-                        // Detail view configuration
-                        'detail' => [
-                            'media' => [
-                                'image' => [
-                                    'maxWidth' => '800'
-                                ]
                             ],
-                            'showSocialShareButtons' => '1',
-                            'showPrevNext' => '1'
-                        ]
+                        ],
                     ]
                 ]
-            ]),
+            ],
         ]);
 
         $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
@@ -519,24 +465,18 @@ class NewsFlexFormTest extends FunctionalTestCase
             'table' => 'tt_content',
             'uid' => $pluginUid,
         ]);
-        
+
         $plugin = json_decode($result->content[0]->text, true)['records'][0];
         $settings = $plugin['pi_flexform']['settings'];
-        
-        // Verify deep nesting
+
+        // Verify nesting
         $this->assertArrayHasKey('media', $settings);
-        $this->assertArrayHasKey('image', $settings['media']);
-        $this->assertArrayHasKey('lightbox', $settings['media']['image']);
-        $this->assertEquals('1', $settings['media']['image']['lightbox']['enabled']);
-        $this->assertEquals('1920', $settings['media']['image']['lightbox']['width']);
-        
-        // Verify list configuration
+        $this->assertEquals('1200', $settings['media']['maxWidth']);
+        $this->assertEquals('800', $settings['media']['maxHeight']);
+
+        // Verify three-level nesting
         $this->assertArrayHasKey('list', $settings);
         $this->assertArrayHasKey('paginate', $settings['list']);
         $this->assertEquals('10', $settings['list']['paginate']['itemsPerPage']);
-        
-        // Verify detail configuration
-        $this->assertArrayHasKey('detail', $settings);
-        $this->assertEquals('1', $settings['detail']['showSocialShareButtons']);
     }
 }

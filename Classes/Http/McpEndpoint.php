@@ -21,7 +21,6 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Hn\McpServer\MCP\McpServerFactory;
 use Hn\McpServer\Service\WorkspaceContextService;
-use Hn\McpServer\Service\BaseUrlService;
 use Hn\McpServer\Service\OAuthService;
 use Hn\McpServer\Service\SiteInformationService;
 use Hn\McpServer\Http\CorsHeadersTrait;
@@ -32,6 +31,7 @@ use Hn\McpServer\Http\CorsHeadersTrait;
 class McpEndpoint
 {
     use CorsHeadersTrait;
+    use RequestUrlTrait;
 
     /**
      * eID entry point via __invoke method
@@ -155,11 +155,13 @@ class McpEndpoint
             // CORS headers are required on the actual response too - browsers
             // block reading any cross-origin response without them, even after
             // a successful preflight.
-            return $this->addCorsHeaders(new Response(
+            $response = new Response(
                 $stream,
                 $statusCode,
                 ['Content-Type' => $contentType]
-            ), $request);
+            );
+
+            return $this->addCorsHeaders($response, $request);
 
         } catch (\Throwable $e) {
             $stream = new Stream('php://temp', 'rw');
@@ -169,11 +171,13 @@ class McpEndpoint
             ]));
             $stream->rewind();
 
-            return $this->addCorsHeaders(new Response(
+            $response = new Response(
                 $stream,
                 500,
                 ['Content-Type' => 'application/json']
-            ), $request);
+            );
+
+            return $this->addCorsHeaders($response, $request);
         }
     }
 
@@ -209,7 +213,7 @@ class McpEndpoint
     /**
      * Create unauthorized response
      */
-    private function createUnauthorizedResponse(string $message, ServerRequestInterface $request = null): ResponseInterface
+    private function createUnauthorizedResponse(string $message, ?ServerRequestInterface $request = null): ResponseInterface
     {
         $stream = new Stream('php://temp', 'rw');
         $stream->write(json_encode([
@@ -221,10 +225,7 @@ class McpEndpoint
         // Build WWW-Authenticate header with resource_metadata URL (RFC 9728)
         $wwwAuth = 'Bearer';
         if ($request !== null) {
-            $container = GeneralUtility::getContainer();
-            $baseUrlService = $container->get(BaseUrlService::class);
-            $baseUrl = $baseUrlService->getBaseUrl($request);
-            $resourceMetadataUrl = $baseUrl . '/.well-known/oauth-protected-resource/mcp';
+            $resourceMetadataUrl = $this->getRequestBaseUrl($request) . '/.well-known/oauth-protected-resource/mcp';
             $wwwAuth = 'Bearer resource_metadata="' . $resourceMetadataUrl . '"';
         }
 
@@ -261,6 +262,20 @@ class McpEndpoint
 
         if ($userData) {
             $beUser->user = $userData;
+
+            // CRITICAL: Restore the user's stored configuration (uc). The regular
+            // authentication flow unserializes it via unpack_uc(), which token auth
+            // bypasses. Without this, $beUser->uc stays empty and any writeUC()
+            // triggered during request processing (e.g. the update signals fired
+            // when the MCP workspace is created below) overwrites the user's
+            // stored backend preferences with a nearly empty array. That in turn
+            // breaks the backend Setup module, which expects keys like 'titleLen'
+            // to exist ("Undefined array key" warning in SetupModuleController).
+            $storedUc = unserialize((string)($userData['uc'] ?? ''), ['allowed_classes' => false]);
+            if (is_array($storedUc)) {
+                $beUser->uc = $storedUc;
+            }
+
             $GLOBALS['BE_USER'] = $beUser;
 
             // CRITICAL: Initialize an (anonymous) user session.
@@ -275,6 +290,15 @@ class McpEndpoint
             // This computes tables_select, tables_modify, non_exclude_fields, webmounts, etc.
             // Without this, non-admin users have no permissions computed from their groups
             $beUser->fetchGroupData();
+
+            // Apply the uc defaults and TSconfig overrides, exactly like
+            // initializeBackendLogin() does after fetchGroupData() on a regular
+            // login. This covers users who never logged into the backend: their
+            // stored uc is empty, and without the defaults the first writeUC()
+            // would persist a nearly empty uc - which core never repairs, since
+            // backendSetUC() only fills in the defaults while uc is completely
+            // empty.
+            $beUser->backendSetUC();
 
             // Initialize language service (required for DataHandler and other core components)
             $this->initializeLanguageService($beUser);

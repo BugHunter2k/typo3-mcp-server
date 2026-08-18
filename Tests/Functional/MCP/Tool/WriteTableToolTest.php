@@ -209,6 +209,49 @@ class WriteTableToolTest extends AbstractFunctionalTest
     }
 
     /**
+     * Regression test for #94: creating a page with an explicit language field
+     * value must be accepted even though sys_language_uid is not part of the
+     * `pages` showitem (and therefore not reported by getAvailableFields()).
+     * The language field is a control field the MCP manages itself, so it must
+     * always be treated as available during validation.
+     */
+    public function testCreatePageWithExplicitLanguageField(): void
+    {
+        $tableAccessService = GeneralUtility::makeInstance(\Hn\McpServer\Service\TableAccessService::class);
+
+        // Document the premise: sys_language_uid is NOT an editable showitem
+        // field for pages, so getAvailableFields() does not list it.
+        $availableFields = $tableAccessService->getAvailableFields('pages', '1');
+        $this->assertArrayNotHasKey(
+            'sys_language_uid',
+            $availableFields,
+            'Premise of #94: sys_language_uid is not part of the pages showitem'
+        );
+
+        $result = $this->tool->execute([
+            'action' => 'create',
+            'table' => 'pages',
+            'pid' => $this->getRootPageUid(),
+            'data' => [
+                'title' => 'Page With Explicit Language',
+                'slug' => '/page-with-explicit-language',
+                'doktype' => 1,
+                'sys_language_uid' => 0,
+            ]
+        ]);
+
+        $this->assertFalse(
+            $result->isError,
+            'Creating a page with explicit sys_language_uid must not be rejected. Error: '
+            . json_encode($result->jsonSerialize(), JSON_PRETTY_PRINT)
+        );
+
+        $pageData = $this->extractJsonFromResult($result);
+        $this->assertEquals('create', $pageData['action']);
+        $this->assertIsInt($pageData['uid']);
+    }
+
+    /**
      * User story: Edit existing content element
      */
     public function testEditExistingContentElement(): void
@@ -970,7 +1013,9 @@ class WriteTableToolTest extends AbstractFunctionalTest
         $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
 
         // Test creating content with FlexForm data
-        // Use a plugin content element which has a pi_flexform field
+        // Use a plugin content element which has a pi_flexform field. The
+        // fields must be declared by the plugin's DataStructure — undeclared
+        // FlexForm fields are rejected explicitly since the DS-aware write path.
         if ($typo3Version->getMajorVersion() >= 14) {
             // In TYPO3 14+, plugins have their own CType (e.g., 'news_pi1')
             $data = [
@@ -978,8 +1023,8 @@ class WriteTableToolTest extends AbstractFunctionalTest
                 'header' => 'Plugin with FlexForm',
                 'pi_flexform' => [
                     'settings' => [
-                        'caption' => 'Plugin Caption',
-                        'headerPosition' => 'top'
+                        'orderBy' => 'datetime',
+                        'orderDirection' => 'desc'
                     ]
                 ]
             ];
@@ -987,11 +1032,12 @@ class WriteTableToolTest extends AbstractFunctionalTest
             // In TYPO3 13, plugins use CType='list' with list_type field
             $data = [
                 'CType' => 'list',
+                'list_type' => 'news_pi1',
                 'header' => 'Plugin with FlexForm',
                 'pi_flexform' => [
                     'settings' => [
-                        'caption' => 'Plugin Caption',
-                        'headerPosition' => 'top'
+                        'orderBy' => 'datetime',
+                        'orderDirection' => 'desc'
                     ]
                 ]
             ];
@@ -1032,6 +1078,40 @@ class WriteTableToolTest extends AbstractFunctionalTest
                 $this->assertStringContainsString('T3FlexForms', $record['pi_flexform']);
             }
         }
+    }
+
+    /**
+     * Test that a bodytext RTE link to a content element anchor
+     * (t3://page?uid=<pid>#c<uid>) survives the write→read round trip
+     */
+    public function testBodytextAnchorLinkRoundTrip(): void
+    {
+        $result = $this->tool->execute([
+            'action' => 'create',
+            'table' => 'tt_content',
+            'pid' => 1,
+            'data' => [
+                'CType' => 'text',
+                'header' => 'Table of contents',
+                'bodytext' => '<p><a href="t3://page?uid=1#c100">Welcome section</a></p>',
+            ],
+        ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+        $uid = json_decode($result->content[0]->text, true)['uid'];
+
+        $readTool = new ReadTableTool();
+        $result = $readTool->execute([
+            'table' => 'tt_content',
+            'uid' => $uid,
+        ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+        $record = json_decode($result->content[0]->text, true)['records'][0];
+
+        $this->assertStringContainsString(
+            't3://page?uid=1#c100',
+            $record['bodytext'],
+            'Anchor link must survive the write→read round trip'
+        );
     }
 
     /**

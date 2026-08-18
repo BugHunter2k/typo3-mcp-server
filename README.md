@@ -7,6 +7,18 @@ AI assistants to safely view and manipulate TYPO3 pages and records through TYPO
 
 **All content changes are automatically queued in TYPO3 workspaces**, making it completely safe for AI assistants to create, update, and modify content without immediately affecting your live website. Changes require explicit publishing to become visible to site visitors.
 
+## 🧪 Continuously Tested With Real LLMs
+
+Every push to `main` runs a benchmark that has the latest models from **Anthropic, OpenAI, Mistral, and Google** actually use this MCP to perform real TYPO3 tasks. That's how we stay vendor-independent and prove the tool descriptions convey what they claim across very different prompting styles — your AI assistant of choice should just work, not only ours. Click any badge for the full run-by-run history.
+
+[
+![haiku-4.5](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FAKfycbwyS4NavPMDQWbQQYCh3uKA4zJ5C8sxggxTZQQPdgjXOZ7Vt4BpUd5mzWdsWMqjzniI%2Fexec&query=%24.percentages%5B%22haiku-4.5%22%5D&suffix=%25&label=haiku-4.5)
+![gpt-5.4-mini](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FAKfycbwyS4NavPMDQWbQQYCh3uKA4zJ5C8sxggxTZQQPdgjXOZ7Vt4BpUd5mzWdsWMqjzniI%2Fexec&query=%24.percentages%5B%22gpt-5.4-mini%22%5D&suffix=%25&label=gpt-5.4-mini)
+![gpt-oss-120b](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FAKfycbwyS4NavPMDQWbQQYCh3uKA4zJ5C8sxggxTZQQPdgjXOZ7Vt4BpUd5mzWdsWMqjzniI%2Fexec&query=%24.percentages%5B%22gpt-oss-120b%22%5D&suffix=%25&label=gpt-oss-120b)
+![mistral-large-2512](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FAKfycbwyS4NavPMDQWbQQYCh3uKA4zJ5C8sxggxTZQQPdgjXOZ7Vt4BpUd5mzWdsWMqjzniI%2Fexec&query=%24.percentages%5B%22mistral-large-2512%22%5D&suffix=%25&label=mistral-large-2512)
+![gemini-3-flash](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FAKfycbwyS4NavPMDQWbQQYCh3uKA4zJ5C8sxggxTZQQPdgjXOZ7Vt4BpUd5mzWdsWMqjzniI%2Fexec&query=%24.percentages%5B%22gemini-3-flash%22%5D&suffix=%25&label=gemini-3-flash)
+](https://docs.google.com/spreadsheets/d/18jL34ymMaUfoCtL32FauPu3n0cTbBTLKuVO7dmGSAS4/edit?usp=sharing)
+
 ## What Can You Do?
 
 With the TYPO3 MCP Server, your AI assistant can help you:
@@ -43,7 +55,7 @@ All these operations happen safely in workspaces, giving you full control to rev
 | **Content Translation**    | ⚠️ Experimental | Implemented, needs real-world testing                                                                         |
 | **Workspace Selection**    | ❌ Missing       | Currently uses the first writable workspace of the user                                                       |
 
-While there are a lot of automated tests, and even some [LLM test](Tests/Llm/README.md), TYPO3 instances are widely different and Language Models are also widely different. Feel free to [create issues here on GitHub](https://github.com/logiscape/mcp-sdk-php/issues) or [share experiences in the typo3-core-ai channel](https://typo3.slack.com/archives/C091M0M7BL6). 
+While there are a lot of automated tests, TYPO3 instances are widely different and Language Models are also widely different. Feel free to [create issues here on GitHub](https://github.com/logiscape/mcp-sdk-php/issues) or [share experiences in the typo3-core-ai channel](https://typo3.slack.com/archives/C091M0M7BL6). 
 
 ## Installation
 
@@ -131,6 +143,44 @@ This method gives you admin privileges by default. Add this to your mcp config f
 }
 ```
 
+### Gateway Integration: Domain List
+
+When this instance sits behind an MCP routing gateway that maps incoming
+URLs to project backends via a `.mcp.json` file, the gateway can resolve a
+pasted site URL (any served domain, e.g. an additional production domain
+or a staging host) to the correct backend AND environment via two optional
+keys in the gateway block (`x-mcp-proxy` — the only part the gateway reads):
+
+```json
+{
+   "mcpServers": { "...": {} },
+   "x-mcp-proxy": {
+      "project": "example",
+      "site": "example",
+      "domains": {
+         "www.example.com": "production",
+         "partner.example.org": "production"
+      },
+      "domainPatterns": ["*.{environment}.example-cloud.de"]
+   }
+}
+```
+
+- `domains` maps irregular hostnames (typically the per-site production
+  domains) to their environment.
+- `domainPatterns` factor the regular site×environment host matrix (e.g.
+  `de.staging3.example-cloud.de`) into one entry per host suffix; the
+  gateway validates the `{environment}` label against the project's routes.
+
+Both keys are written by the LIA `.mcp.json` generator from the committed
+site configurations. To cross-check which domains the running instance
+actually serves (all site bases + `baseVariants`), print the flat inventory:
+
+```bash
+vendor/bin/typo3 mcp:domains
+# {"domains": ["de.staging1.example-cloud.de", "partner.example.org", ...]}
+```
+
 ## Development
 
 ### Running Tests
@@ -141,6 +191,10 @@ composer test
 
 # E2E tests — spins up MySQL, TYPO3, and Playwright in Docker
 Build/runTests.sh -s e2e
+
+# E2E without Docker (host PHP + SQLite + local Playwright).
+# Auto-selected when Docker is unavailable.
+Build/runTests.sh -s e2e --no-docker
 
 # E2E against an existing TYPO3 instance
 TYPO3_BASE_URL=https://my.ddev.site Build/runTests.sh -s e2e

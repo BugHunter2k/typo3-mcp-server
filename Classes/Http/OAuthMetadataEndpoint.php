@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\Http;
 
-use Hn\McpServer\Service\BaseUrlService;
 use Hn\McpServer\Service\OAuthService;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -18,10 +17,7 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
 class OAuthMetadataEndpoint
 {
     use CorsHeadersTrait;
-
-    public function __construct(
-        private readonly BaseUrlService $baseUrlService,
-    ) {}
+    use RequestUrlTrait;
 
     public function __invoke(ServerRequestInterface $request): ResponseInterface
     {
@@ -31,7 +27,7 @@ class OAuthMetadataEndpoint
         }
 
         try {
-            $baseUrl = $this->baseUrlService->getBaseUrl($request);
+            $baseUrl = $this->getRequestBaseUrl($request);
 
             $oauthService = GeneralUtility::makeInstance(OAuthService::class);
             $metadata = $oauthService->getMetadata($baseUrl);

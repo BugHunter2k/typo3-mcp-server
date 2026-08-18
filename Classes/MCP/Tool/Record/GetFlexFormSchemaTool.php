@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Hn\McpServer\MCP\Tool\Record;
 
 use Mcp\Types\CallToolResult;
-use TYPO3\CMS\Core\Service\FlexFormService;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use Hn\McpServer\Utility\TcaFormattingUtility;
+use Hn\McpServer\Service\FlexFormStructureService;
 use Hn\McpServer\Service\TableAccessService;
 
 /**
@@ -37,11 +37,11 @@ class GetFlexFormSchemaTool extends AbstractRecordTool
                     ],
                     'identifier' => [
                         'type' => 'string',
-                        'description' => 'The FlexForm identifier (e.g., "form_formframework", "*,news_pi1"). For plugins, often uses pattern "*,list_type_value"',
+                        'description' => 'The FlexForm identifier. TYPO3 14 keys DataStructures directly by CType (e.g. "news_pi1", "form_formframework").',
                     ],
                     'recordUid' => [
                         'type' => 'integer',
-                        'description' => 'Optional record UID (currently not used but accepted for compatibility)',
+                        'description' => 'Optional record UID. When given, the record is loaded and used to resolve the DataStructure, so record-dependent schemas (e.g. EXT:form finisher override sheets) are included.',
                     ],
                 ],
                 'required' => ['identifier'],
@@ -58,11 +58,12 @@ class GetFlexFormSchemaTool extends AbstractRecordTool
      */
     protected function doExecute(array $params): CallToolResult
     {
-        
+
         // Get parameters
         $table = $params['table'] ?? 'tt_content';
         $field = $params['field'] ?? 'pi_flexform';
         $identifier = $params['identifier'] ?? '';
+        $recordUid = isset($params['recordUid']) ? (int)$params['recordUid'] : null;
 
         // Validate parameters
         if (empty($identifier)) {
@@ -78,16 +79,8 @@ class GetFlexFormSchemaTool extends AbstractRecordTool
         }
 
         // Check if the field is a FlexForm field
-        if ($GLOBALS['TCA'][$table]['columns'][$field]['config']['type'] !== 'flex') {
+        if (($GLOBALS['TCA'][$table]['columns'][$field]['config']['type'] ?? '') !== 'flex') {
             throw new \InvalidArgumentException("Field '$field' in table '$table' is not a FlexForm field");
-        }
-
-        // Get the FlexForm configuration
-        $flexFormConfig = $GLOBALS['TCA'][$table]['columns'][$field]['config'];
-
-        // Special handling for form_formframework
-        if ($identifier === 'form_formframework') {
-            $identifier = '*,form_formframework';
         }
 
         // Build the header
@@ -96,122 +89,27 @@ class GetFlexFormSchemaTool extends AbstractRecordTool
         $header .= "Table: $table\n";
         $header .= "Field: $field\n\n";
 
-        // Resolve the ds value from TCA
-        $dsValue = $this->resolveFlexFormDs($table, $field, $identifier, $flexFormConfig);
+        // Resolve the DataStructure through FlexFormStructureService (which
+        // uses TYPO3's FlexFormTools) so the DataStructure identifier events
+        // run. This is essential for dynamic DataStructures such as EXT:form
+        // (form_formframework): the `settings.persistenceIdentifier` select
+        // items (the list of available forms) and the per-finisher override
+        // sheets are injected at runtime and are absent from the static
+        // FlexForm XML file. Reading the raw file — as this tool did
+        // previously — would hide them from the LLM.
+        $structure = GeneralUtility::makeInstance(FlexFormStructureService::class)
+            ->resolveDataStructure($table, $field, $identifier, $recordUid);
 
-        if ($dsValue !== null) {
-            return $this->processResolvedDs($dsValue, $header);
-        }
-
-        // If we get here, the identifier was not found
-        throw new \InvalidArgumentException("FlexForm schema not found for identifier: $identifier");
-    }
-
-    /**
-     * Resolve FlexForm data structure from TCA.
-     *
-     * Checks:
-     * 1. Base column config ds array (TYPO3 13 multi-entry format)
-     * 2. columnsOverrides per type (TYPO3 14 single-entry format)
-     * 3. columnsOverrides using CType extracted from composite identifier like "*,news_pi1"
-     *
-     * @return string|array|null The resolved ds value, or null if not found
-     */
-    protected function resolveFlexFormDs(string $table, string $field, string $identifier, array $flexFormConfig): string|array|null
-    {
-        // 1. Check if the identifier exists directly in the base ds array (TYPO3 13 format)
-        if (isset($flexFormConfig['ds'][$identifier])) {
-            return $flexFormConfig['ds'][$identifier];
-        }
-
-        // 2. Check columnsOverrides for the identifier as a CType (TYPO3 14 format)
-        $dsFromOverrides = $GLOBALS['TCA'][$table]['types'][$identifier]['columnsOverrides'][$field]['config']['ds'] ?? null;
-        if ($dsFromOverrides !== null) {
-            return $dsFromOverrides;
-        }
-
-        // 3. For composite identifiers like "*,news_pi1", extract the CType part and check columnsOverrides
-        if (str_contains($identifier, ',')) {
-            $parts = GeneralUtility::trimExplode(',', $identifier, true);
-            $cType = end($parts);
-            $dsFromOverrides = $GLOBALS['TCA'][$table]['types'][$cType]['columnsOverrides'][$field]['config']['ds'] ?? null;
-            if ($dsFromOverrides !== null) {
-                return $dsFromOverrides;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Process a resolved ds value and return a CallToolResult
-     */
-    protected function processResolvedDs(string|array $dsValue, string $header): CallToolResult
-    {
-        // Handle FILE: references
-        if (is_string($dsValue) && strpos($dsValue, 'FILE:') === 0) {
-            $file = substr($dsValue, 5);
-            $file = GeneralUtility::getFileAbsFileName($file);
-            $prefix = "Schema defined in file: " . $file . "\n\n";
-
-            if (file_exists($file)) {
-                $content = file_get_contents($file);
-                if (!empty($content)) {
-                    $xmlArray = GeneralUtility::xml2array($content);
-
-                    if ($xmlArray) {
-                        $processedData = $this->processFlexFormXml($xmlArray);
-                        $result = $this->formatFlexFormSchema($processedData, $header . $prefix);
-                        return $this->createSuccessResult($result);
-                    } else {
-                        throw new \RuntimeException("Failed to parse XML schema from file: $file");
-                    }
-                } else {
-                    throw new \RuntimeException("FlexForm file is empty: $file");
-                }
-            } else {
-                throw new \RuntimeException("FlexForm file not found: $file");
-            }
-        } elseif (is_string($dsValue)) {
-            $prefix = "Schema defined inline as XML\n\n";
-
-            $xmlArray = GeneralUtility::xml2array($dsValue);
-
-            if ($xmlArray) {
-                $processedData = $this->processFlexFormXml($xmlArray);
-                $result = $this->formatFlexFormSchema($processedData, $header . $prefix);
+        if ($structure !== null) {
+            $processedData = $this->processFlexFormXml($structure);
+            if (!empty($processedData['fields']) || !empty($processedData['sheets'])) {
+                $result = $this->formatFlexFormSchema($processedData, $header);
                 return $this->createSuccessResult($result);
-            } else {
-                throw new \RuntimeException("Failed to parse inline XML schema");
-            }
-        } elseif (is_array($dsValue)) {
-            $processedData = $this->processFlexFormXml($dsValue);
-            $prefix = "Schema defined as PHP array\n\n";
-            $result = $this->formatFlexFormSchema($processedData, $prefix);
-            return $this->createSuccessResult($result);
-        }
-
-        throw new \RuntimeException("Unknown FlexForm ds value type");
-    }
-
-    /**
-     * Get all possible values for a pointer field
-     */
-    protected function getPointerFieldValues(string $table, string $field): array
-    {
-        $values = [];
-
-        if (isset($GLOBALS['TCA'][$table]['columns'][$field]['config']['items'])) {
-            foreach ($GLOBALS['TCA'][$table]['columns'][$field]['config']['items'] as $item) {
-                if (isset($item['value'])) {
-                    $values[] = $item['value'];
-                } elseif (isset($item[1])) {
-                    $values[] = $item[1];
-                }
             }
         }
 
-        return $values;
+        // If we get here, the identifier could not be resolved to a DataStructure
+        throw new \InvalidArgumentException("FlexForm schema not found for identifier: $identifier");
     }
 
     /**
@@ -470,331 +368,4 @@ class GetFlexFormSchemaTool extends AbstractRecordTool
 
         return $example;
     }
-
-    /**
-     * Generate a JSON example for the FlexForm
-     */
-    protected function generateJsonExample(array $flexFormDS): string
-    {
-        // Check if we have a valid FlexForm structure
-        if (empty($flexFormDS)) {
-            return json_encode(['pi_flexform' => []], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-        }
-
-        // Create a simplified structure that matches what ReadTableTool will return
-        $example = [];
-
-        // Process sheets
-        if (isset($flexFormDS['sheets']) && is_array($flexFormDS['sheets'])) {
-            foreach ($flexFormDS['sheets'] as $sheetName => $sheetConfig) {
-                if (isset($sheetConfig['ROOT']['el']) && is_array($sheetConfig['ROOT']['el'])) {
-                    foreach ($sheetConfig['ROOT']['el'] as $fieldName => $fieldConfig) {
-                        $example[$fieldName] = $this->getExampleValueForField($fieldConfig);
-                    }
-                }
-            }
-        } elseif (isset($flexFormDS['ROOT']['el']) && is_array($flexFormDS['ROOT']['el'])) {
-            foreach ($flexFormDS['ROOT']['el'] as $fieldName => $fieldConfig) {
-                $example[$fieldName] = $this->getExampleValueForField($fieldConfig);
-            }
-        }
-
-        return json_encode(['pi_flexform' => $example], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-    }
-
-    /**
-     * Get an example value for a FlexForm field based on its configuration
-     */
-    protected function getExampleValueForField(array $fieldConfig): mixed
-    {
-        // Handle section containers
-        if (isset($fieldConfig['type']) && $fieldConfig['type'] === 'array') {
-            $sectionExample = [];
-            if (isset($fieldConfig['el']) && is_array($fieldConfig['el'])) {
-                foreach ($fieldConfig['el'] as $sectionFieldName => $sectionFieldConfig) {
-                    $sectionExample[$sectionFieldName] = $this->getExampleValueForField($sectionFieldConfig);
-                }
-            }
-            return [$sectionExample]; // Return as array to represent multiple section items
-        }
-
-        // Get the field configuration
-        $config = $fieldConfig['config'] ?? [];
-        if (empty($config) && isset($fieldConfig['TCEforms']['config'])) {
-            $config = $fieldConfig['TCEforms']['config'];
-        }
-
-        $fieldType = $config['type'] ?? '';
-
-        switch ($fieldType) {
-            case 'input':
-                return 'Example text';
-
-            case 'text':
-                return 'Example multi-line text';
-
-            case 'check':
-                return true;
-
-            case 'select':
-                // Try to get the first item from items array
-                if (!empty($config['items'])) {
-                    $firstItem = reset($config['items']);
-                    if (is_array($firstItem)) {
-                        return $firstItem[1] ?? '1';
-                    }
-                }
-                return '1';
-
-            case 'group':
-                return '1,2,3';
-
-            case 'inline':
-                return [1, 2, 3];
-
-            default:
-                return 'Example value';
-        }
-    }
-
-    /**
-     * Process a FlexForm field and return its description
-     */
-    protected function processFlexFormField(string $fieldName, array $fieldConfig, int $level): string
-    {
-        $result = '';
-        $indent = str_repeat('  ', $level);
-
-        // Extract field configuration
-        $tceForms = $fieldConfig['TCEforms'] ?? [];
-        $config = $tceForms['config'] ?? [];
-        $type = $config['type'] ?? 'unknown';
-        $label = TableAccessService::translateLabel($tceForms['label'] ?? $fieldName);
-
-        // Handle section containers
-        if (isset($fieldConfig['type']) && $fieldConfig['type'] === 'array') {
-            $result .= "$indent- $fieldName (Section Container):\n";
-
-            if (isset($fieldConfig['section']) && $fieldConfig['section'] === '1') {
-                $result .= "$indent  Section: true\n";
-            }
-
-            if (isset($fieldConfig['el']) && is_array($fieldConfig['el'])) {
-                $result .= "$indent  Elements:\n";
-
-                foreach ($fieldConfig['el'] as $sectionFieldName => $sectionFieldConfig) {
-                    $result .= $this->processFlexFormField($sectionFieldName, $sectionFieldConfig, $level + 2);
-                }
-            }
-
-            return $result;
-        }
-
-        // Regular field
-        $result .= "$indent- $fieldName ($type): $label\n";
-
-        // Add field configuration details
-        if (!empty($config)) {
-            // Field size
-            if (isset($config['size'])) {
-                $result .= "$indent  Size: " . $config['size'] . "\n";
-            }
-
-            // Field max length
-            if (isset($config['max'])) {
-                $result .= "$indent  Max Length: " . $config['max'] . "\n";
-            }
-
-            // Field validation rules
-            if (isset($config['eval'])) {
-                $result .= "$indent  Validation: " . $config['eval'] . "\n";
-            }
-
-            // Select field items
-            if ($type === 'select' && isset($config['items']) && is_array($config['items'])) {
-                $result .= "$indent  Options:\n";
-
-                foreach ($config['items'] as $item) {
-                    $itemLabel = '';
-                    $itemValue = '';
-
-                    if (isset($item['label'])) {
-                        $itemLabel = TableAccessService::translateLabel($item['label']);
-                        $itemValue = $item['value'] ?? '';
-                    } elseif (isset($item[0])) {
-                        $itemLabel = TableAccessService::translateLabel($item[0]);
-                        $itemValue = $item[1] ?? '';
-                    }
-
-                    $result .= "$indent    - $itemValue: $itemLabel\n";
-                }
-            }
-
-            // Checkbox field
-            if ($type === 'check') {
-                $result .= "$indent  Default: " . ($config['default'] ?? '0') . "\n";
-            }
-
-            // Relation fields (group, select with foreign_table)
-            if (isset($config['foreign_table'])) {
-                $result .= "$indent  Foreign Table: " . $config['foreign_table'] . "\n";
-            }
-        }
-
-        return $result;
-    }
-
-    /**
-     * Add field details inline
-     */
-    protected function addFieldDetailsInline(string &$result, $config): void
-    {
-        TcaFormattingUtility::addFieldDetailsInline($result, $config);
-    }
-
-    /**
-     * Get all available FlexForms for a table and field
-     */
-    protected function getAvailableFlexForms(string $table, string $field): array
-    {
-        $result = [];
-
-        // Check if the table and field exist
-        if (!isset($GLOBALS['TCA'][$table]['columns'][$field])) {
-            return $result;
-        }
-
-        // Check if the field is a FlexForm field
-        if ($GLOBALS['TCA'][$table]['columns'][$field]['config']['type'] !== 'flex') {
-            return $result;
-        }
-
-        $flexFormConfig = $GLOBALS['TCA'][$table]['columns'][$field]['config'];
-
-        // Handle ds_pointerField configuration
-        if (!empty($flexFormConfig['ds_pointerField'])) {
-            $pointerField = $flexFormConfig['ds_pointerField'];
-            $pointerFieldConfig = $GLOBALS['TCA'][$table]['columns'][$pointerField] ?? [];
-
-            // Get the possible values for the pointer field
-            if (!empty($pointerFieldConfig['config']['items'])) {
-                foreach ($pointerFieldConfig['config']['items'] as $item) {
-                    $value = $item[1] ?? '';
-                    if (!empty($value)) {
-                        $result[$value] = [
-                            'id' => $value,
-                            'label' => $item[0] ?? $value,
-                        ];
-                    }
-                }
-            }
-        }
-
-        // Handle ds configuration
-        if (!empty($flexFormConfig['ds']) && is_array($flexFormConfig['ds'])) {
-            foreach ($flexFormConfig['ds'] as $key => $ds) {
-                if (is_string($ds) && strpos($ds, 'FILE:') === 0) {
-                    $file = substr($ds, 5);
-                    $result[$key] = [
-                        'id' => $key,
-                        'file' => $file,
-                    ];
-                } else {
-                    $result[$key] = [
-                        'id' => $key,
-                    ];
-                }
-            }
-        }
-
-        // Add default FlexForm if available
-        if (!empty($flexFormConfig['ds']['default'])) {
-            $result['default'] = [
-                'id' => 'default',
-            ];
-        }
-
-        return $result;
-    }
-
-    /**
-     * Get the FlexForm data structure for a specific identifier
-     */
-    protected function getFlexFormDS(string $table, string $field, string $identifier): array
-    {
-        // Check if the table and field exist
-        if (!isset($GLOBALS['TCA'][$table]['columns'][$field])) {
-            return [];
-        }
-
-        // Check if the field is a FlexForm field
-        if ($GLOBALS['TCA'][$table]['columns'][$field]['config']['type'] !== 'flex') {
-            return [];
-        }
-
-        $flexFormConfig = $GLOBALS['TCA'][$table]['columns'][$field]['config'];
-
-        // Resolve ds value using version-aware lookup
-        $flexFormDS = $this->resolveFlexFormDs($table, $field, $identifier, $flexFormConfig);
-
-        if ($flexFormDS === null) {
-            return [];
-        }
-
-        // Handle FILE: references
-        if (is_string($flexFormDS) && strpos($flexFormDS, 'FILE:') === 0) {
-            $file = substr($flexFormDS, 5);
-            $file = GeneralUtility::getFileAbsFileName($file);
-
-            if (file_exists($file)) {
-                $content = file_get_contents($file);
-                if (!empty($content)) {
-                    $flexFormService = GeneralUtility::makeInstance(FlexFormService::class);
-                    return $flexFormService->convertFlexFormContentToArray($content);
-                }
-            }
-        } elseif (is_string($flexFormDS)) {
-            $flexFormService = GeneralUtility::makeInstance(FlexFormService::class);
-            return $flexFormService->convertFlexFormContentToArray($flexFormDS);
-        } elseif (is_array($flexFormDS)) {
-            return $flexFormDS;
-        }
-
-        return [];
-    }
-
-    /**
-     * Process a FlexForm data structure and return a human-readable description
-     */
-    protected function processFlexFormDS(array $flexFormDS, string $identifier): string
-    {
-        $result = '';
-
-        // Process sheets
-        if (isset($flexFormDS['sheets']) && is_array($flexFormDS['sheets'])) {
-            foreach ($flexFormDS['sheets'] as $sheetName => $sheetConfig) {
-                $sheetLabel = TableAccessService::translateLabel($sheetName);
-                $result .= "SHEET: $sheetLabel\n";
-                $result .= str_repeat("-", strlen("SHEET: $sheetLabel")) . "\n";
-
-                // Process the fields
-                if (isset($sheetConfig['ROOT']['el']) && is_array($sheetConfig['ROOT']['el'])) {
-                    foreach ($sheetConfig['ROOT']['el'] as $fieldName => $fieldConfig) {
-                        $result .= $this->processFlexFormField($fieldName, $fieldConfig, 0);
-                    }
-                }
-
-                $result .= "\n";
-            }
-        } elseif (isset($flexFormDS['ROOT']['el']) && is_array($flexFormDS['ROOT']['el'])) {
-            foreach ($flexFormDS['ROOT']['el'] as $fieldName => $fieldConfig) {
-                $result .= $this->processFlexFormField($fieldName, $fieldConfig, 0);
-            }
-        } else {
-            $result .= "No fields found in FlexForm data structure.\n";
-        }
-
-        return $result;
-    }
-
 }

@@ -16,9 +16,9 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Core\Domain\Repository\PageRepository;
 use TYPO3\CMS\Core\Context\Context;
 use TYPO3\CMS\Core\Context\LanguageAspect;
-use TYPO3\CMS\Core\Information\Typo3Version;
 use Hn\McpServer\Service\SiteInformationService;
 use Hn\McpServer\Service\LanguageService;
+use Hn\McpServer\Service\TableAccessService;
 use Hn\McpServer\MCP\Tool\Record\AbstractRecordTool;
 
 /**
@@ -367,47 +367,35 @@ class GetPageTreeTool extends AbstractRecordTool
             ->removeAll()
             ->add(GeneralUtility::makeInstance(DeletedRestriction::class));
         
-        $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
-        if ($typo3Version->getMajorVersion() >= 14) {
-            // TYPO3 14+: plugins have their own CType (e.g., 'news_pi1')
-            $plugins = $queryBuilder
-                ->select('*')
-                ->from('tt_content')
-                ->where(
-                    $queryBuilder->expr()->eq('pid', $queryBuilder->createNamedParameter($pageId, ParameterType::INTEGER)),
-                    $queryBuilder->expr()->eq('CType', $queryBuilder->createNamedParameter('news_pi1'))
+        // Match news plugins on both TYPO3 13 (CType=list, list_type=news_pi1)
+        // and TYPO3 14 (CType=news_pi1).
+        $newsPluginCondition = TableAccessService::hasPluginSubtypes()
+            ? $queryBuilder->expr()->or(
+                $queryBuilder->expr()->eq('CType', $queryBuilder->createNamedParameter('news_pi1')),
+                $queryBuilder->expr()->and(
+                    $queryBuilder->expr()->eq('CType', $queryBuilder->createNamedParameter('list')),
+                    $queryBuilder->expr()->eq('list_type', $queryBuilder->createNamedParameter('news_pi1'))
                 )
-                ->executeQuery()
-                ->fetchAllAssociative();
-        } else {
-            // TYPO3 13: plugins use CType='list' with list_type field
-            $plugins = $queryBuilder
-                ->select('*')
-                ->from('tt_content')
-                ->where(
-                    $queryBuilder->expr()->eq('pid', $queryBuilder->createNamedParameter($pageId, ParameterType::INTEGER)),
-                    $queryBuilder->expr()->eq('CType', $queryBuilder->createNamedParameter('list'))
-                )
-                ->executeQuery()
-                ->fetchAllAssociative();
-        }
+            )
+            : $queryBuilder->expr()->eq('CType', $queryBuilder->createNamedParameter('news_pi1'));
+
+        $plugins = $queryBuilder
+            ->select('*')
+            ->from('tt_content')
+            ->where(
+                $queryBuilder->expr()->eq('pid', $queryBuilder->createNamedParameter($pageId, ParameterType::INTEGER)),
+                $newsPluginCondition
+            )
+            ->executeQuery()
+            ->fetchAllAssociative();
 
         foreach ($plugins as $plugin) {
-            $isNewsPlugin = false;
-            if ($typo3Version->getMajorVersion() >= 14) {
-                // In TYPO3 14+, the CType itself identifies the plugin
-                $isNewsPlugin = ($plugin['CType'] === 'news_pi1');
-            } else {
-                // In TYPO3 13, check list_type field
-                $isNewsPlugin = (isset($plugin['list_type']) && $plugin['list_type'] === 'news_pi1');
-            }
-
-            if ($isNewsPlugin && !empty($plugin['pi_flexform'])) {
-                // Simple regex to extract startingpoint value
-                if (preg_match('/<field index="settings\.startingpoint">.*?<value[^>]*>(\d+)<\/value>/s', $plugin['pi_flexform'], $matches)) {
-                    $storagePid = (int)$matches[1];
-                    $hints .= ' [news plugin → pid:' . $storagePid . ']';
-                }
+            // Check for news plugin with startingpoint configuration
+            if (!empty($plugin['pi_flexform'])
+                && preg_match('/<field index="settings\.startingpoint">.*?<value[^>]*>(\d+)<\/value>/s', $plugin['pi_flexform'], $matches)
+            ) {
+                $storagePid = (int)$matches[1];
+                $hints .= ' [news plugin → pid:' . $storagePid . ']';
             }
         }
         
