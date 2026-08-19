@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\Http;
 
+use Hn\McpServer\Controller\OAuthResumeController;
 use Hn\McpServer\Service\OAuthService;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
+use TYPO3\CMS\Core\Http\RedirectResponse;
 use TYPO3\CMS\Core\Http\Response;
 use TYPO3\CMS\Core\Http\Stream;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
@@ -117,39 +119,28 @@ class OAuthAuthorizeEndpoint
     private function redirectToLogin(ServerRequestInterface $request): ResponseInterface
     {
         $queryParams = $request->getQueryParams();
-        
-        // Store OAuth parameters in cookie
-        $oauthData = [
-            'client_id' => $queryParams['client_id'] ?? '',
-            'client_name' => $this->resolveClientName($request),
-            'redirect_uri' => $queryParams['redirect_uri'] ?? '',
-            'code_challenge' => $queryParams['code_challenge'] ?? '',
-            'code_challenge_method' => $queryParams['code_challenge_method'] ?? '',
-            'state' => $queryParams['state'] ?? ''
-        ];
-        
-        $oauthDataEncoded = base64_encode(json_encode($oauthData));
-        $loginUrl = $this->getRequestSitePath($request) . '/typo3/index.php?loginProvider=1450629977&login_status=login';
-        
-        // Build cookie string with environment-aware security flags
-        $isHttps = $request->getUri()->getScheme() === 'https';
-        $cookieFlags = 'Max-Age=600; Path=/; HttpOnly; SameSite=Lax';
-        if ($isHttps) {
-            $cookieFlags .= '; Secure';
-        }
-        
-        $stream = new Stream('php://temp', 'rw');
-        $stream->write('');
-        $stream->rewind();
 
-        return new Response(
-            $stream,
-            302,
-            [
-                'Location' => $loginUrl,
-                'Set-Cookie' => 'tx_mcpserver_oauth=' . $oauthDataEncoded . '; ' . $cookieFlags
-            ]
-        );
+        // Carry the pending authorization across the login round-trip so the
+        // authorization link does not have to be opened a second time.
+        //
+        // TYPO3 resolves the post-login target through RouteRedirect, which accepts a
+        // registered backend route name and never an arbitrary URL — an open redirector
+        // behind the login form would be a phishing vector. BackendController hands
+        // "redirectParams" to that route, where OAuthResumeController picks them up.
+        $pendingAuthorization = array_filter([
+            'client_id' => (string)($queryParams['client_id'] ?? ''),
+            'redirect_uri' => (string)($queryParams['redirect_uri'] ?? ''),
+            'code_challenge' => (string)($queryParams['code_challenge'] ?? ''),
+            'code_challenge_method' => (string)($queryParams['code_challenge_method'] ?? ''),
+            'state' => (string)($queryParams['state'] ?? ''),
+        ], static fn (string $value): bool => $value !== '');
+
+        $loginUrl = $this->getRequestSitePath($request)
+            . '/typo3/index.php?loginProvider=1450629977&login_status=login'
+            . '&redirect=' . rawurlencode(OAuthResumeController::ROUTE_NAME)
+            . '&redirectParams=' . rawurlencode(http_build_query($pendingAuthorization));
+
+        return new RedirectResponse($loginUrl, 302);
     }
 
     private function handleApproval(ServerRequestInterface $request, int $beUserId): ResponseInterface
