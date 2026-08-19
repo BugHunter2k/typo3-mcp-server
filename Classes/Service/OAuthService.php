@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\Service;
 
+use TYPO3\CMS\Core\Configuration\ExtensionConfiguration;
 use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
@@ -22,8 +23,80 @@ class OAuthService
      */
     public const REDIRECT_URI_LOOPBACK_SENTINEL = 'loopback:*';
     private const CLIENTS_TABLE = 'tx_mcpserver_oauth_clients';
-    private const CODE_EXPIRY_SECONDS = 600; // 10 minutes
-    private const TOKEN_EXPIRY_SECONDS = 2592000; // 30 days
+    private const DEFAULT_AUTHORIZATION_CODE_LIFETIME = 600; // 10 minutes
+    private const DEFAULT_TOKEN_LIFETIME = 2592000; // 30 days
+
+    private ?int $tokenLifetime = null;
+    private ?int $authorizationCodeLifetime = null;
+
+    /**
+     * Access token lifetime in seconds, from extension configuration.
+     *
+     * This is the upper bound on how long a session survives without anybody
+     * touching it: a token cannot outlive its lifetime even when it is never used
+     * again. Installations that do not want long-lived unattended sessions
+     * shorten it here rather than relying on cleanup.
+     */
+    public function getTokenLifetime(): int
+    {
+        if ($this->tokenLifetime === null) {
+            $this->tokenLifetime = $this->readLifetime('tokenLifetime', self::DEFAULT_TOKEN_LIFETIME);
+        }
+
+        return $this->tokenLifetime;
+    }
+
+    /**
+     * Authorization code lifetime in seconds, from extension configuration.
+     *
+     * Covers only the seconds between consent and the client's token request, so
+     * it is short by design and rarely needs changing.
+     */
+    public function getAuthorizationCodeLifetime(): int
+    {
+        if ($this->authorizationCodeLifetime === null) {
+            $this->authorizationCodeLifetime = $this->readLifetime(
+                'authorizationCodeLifetime',
+                self::DEFAULT_AUTHORIZATION_CODE_LIFETIME
+            );
+        }
+
+        return $this->authorizationCodeLifetime;
+    }
+
+    /**
+     * Read a lifetime from the extension configuration.
+     *
+     * An absent or empty setting falls back to the default — that is the state of
+     * an installation whose extension configuration was never saved. A value that
+     * is present but not a positive number is a misconfiguration and throws
+     * instead of silently granting the default, which for a lifetime would mean
+     * far longer sessions than the operator asked for.
+     */
+    private function readLifetime(string $setting, int $default): int
+    {
+        try {
+            $configured = GeneralUtility::makeInstance(ExtensionConfiguration::class)
+                ->get('mcp_server', $setting);
+        } catch (\Exception) {
+            return $default;
+        }
+
+        if ($configured === null || $configured === '') {
+            return $default;
+        }
+
+        $seconds = (int)$configured;
+        if ($seconds <= 0) {
+            throw new \InvalidArgumentException(sprintf(
+                'Extension configuration "mcp_server.%s" must be a positive number of seconds, got "%s".',
+                $setting,
+                (string)$configured
+            ));
+        }
+
+        return $seconds;
+    }
 
     /**
      * Generate authorization URL for OAuth flow
@@ -63,7 +136,7 @@ class OAuthService
     public function createAuthorizationCode(int $beUserId, string $clientName, string $redirectUri = '', string $pkceChallenge = '', string $challengeMethod = 'S256', string $clientId = ''): string
     {
         $code = $this->generateSecureToken();
-        $expires = time() + self::CODE_EXPIRY_SECONDS;
+        $expires = time() + $this->getAuthorizationCodeLifetime();
 
         $connection = GeneralUtility::makeInstance(ConnectionPool::class)
             ->getConnectionForTable('tx_mcpserver_oauth_codes');
@@ -94,7 +167,7 @@ class OAuthService
      * If $clientId is provided and the code was issued to a specific client,
      * the two MUST match (RFC 6749 §10.5). A code without a stored client_id
      * (legacy data from before code-to-client binding was introduced) is
-     * accepted regardless — those expire within {@see self::CODE_EXPIRY_SECONDS}.
+     * accepted regardless — those expire within the authorization code lifetime.
      */
     public function exchangeCodeForToken(string $code, ?string $codeVerifier = null, ?ServerRequestInterface $request = null, ?string $redirectUri = null, ?string $clientId = null): ?array
     {
@@ -151,7 +224,7 @@ class OAuthService
 
         // Generate access token
         $accessToken = $this->generateSecureToken();
-        $expires = time() + self::TOKEN_EXPIRY_SECONDS;
+        $expires = time() + $this->getTokenLifetime();
 
         // Get client IP
         $clientIp = '';
@@ -207,7 +280,7 @@ class OAuthService
         return [
             'access_token' => $accessToken,
             'token_type' => 'Bearer',
-            'expires_in' => self::TOKEN_EXPIRY_SECONDS,
+            'expires_in' => $this->getTokenLifetime(),
         ];
     }
 
@@ -406,7 +479,7 @@ class OAuthService
      */
     private function cleanupStaleClients(int $currentTime): void
     {
-        $threshold = $currentTime - self::TOKEN_EXPIRY_SECONDS;
+        $threshold = $currentTime - $this->getTokenLifetime();
 
         $connection = GeneralUtility::makeInstance(ConnectionPool::class)
             ->getConnectionForTable(self::CLIENTS_TABLE);
@@ -881,7 +954,7 @@ class OAuthService
     public function createDirectAccessToken(int $beUserId, string $clientName, ?ServerRequestInterface $request = null): string
     {
         $accessToken = $this->generateSecureToken();
-        $expires = time() + self::TOKEN_EXPIRY_SECONDS;
+        $expires = time() + $this->getTokenLifetime();
 
         // Get client IP
         $clientIp = '';
@@ -928,7 +1001,7 @@ class OAuthService
     public function createToken(int $beUserUid, string $clientName, ?int $ttlSeconds = null): array
     {
         $accessToken = $this->generateSecureToken();
-        $ttl = $ttlSeconds ?? self::TOKEN_EXPIRY_SECONDS;
+        $ttl = $ttlSeconds ?? $this->getTokenLifetime();
         if ($ttl <= 0) {
             throw new \InvalidArgumentException('Token TTL must be greater than zero seconds.');
         }
