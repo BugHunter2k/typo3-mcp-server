@@ -8,6 +8,7 @@ use Hn\McpServer\Service\OAuthService;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
+use TYPO3\CMS\Core\Http\RedirectResponse;
 use TYPO3\CMS\Core\Http\Response;
 use TYPO3\CMS\Core\Http\Stream;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
@@ -116,40 +117,22 @@ class OAuthAuthorizeEndpoint
 
     private function redirectToLogin(ServerRequestInterface $request): ResponseInterface
     {
-        $queryParams = $request->getQueryParams();
-        
-        // Store OAuth parameters in cookie
-        $oauthData = [
-            'client_id' => $queryParams['client_id'] ?? '',
-            'client_name' => $this->resolveClientName($request),
-            'redirect_uri' => $queryParams['redirect_uri'] ?? '',
-            'code_challenge' => $queryParams['code_challenge'] ?? '',
-            'code_challenge_method' => $queryParams['code_challenge_method'] ?? '',
-            'state' => $queryParams['state'] ?? ''
-        ];
-        
-        $oauthDataEncoded = base64_encode(json_encode($oauthData));
-        $loginUrl = $this->getRequestSitePath($request) . '/typo3/index.php?loginProvider=1450629977&login_status=login';
-        
-        // Build cookie string with environment-aware security flags
-        $isHttps = $request->getUri()->getScheme() === 'https';
-        $cookieFlags = 'Max-Age=600; Path=/; HttpOnly; SameSite=Lax';
-        if ($isHttps) {
-            $cookieFlags .= '; Secure';
-        }
-        
-        $stream = new Stream('php://temp', 'rw');
-        $stream->write('');
-        $stream->rewind();
-
-        return new Response(
-            $stream,
-            302,
-            [
-                'Location' => $loginUrl,
-                'Set-Cookie' => 'tx_mcpserver_oauth=' . $oauthDataEncoded . '; ' . $cookieFlags
-            ]
+        $cookie = GeneralUtility::makeInstance(PendingAuthorizationCookie::class);
+        // resolveClientName() already prefers a non-empty client_name from the query and only
+        // then falls back to the Referer host, so it wins over the raw query value here.
+        $pendingAuthorization = $cookie->extract(
+            ['client_name' => $this->resolveClientName($request)] + $request->getQueryParams()
         );
+
+        // No "loginProvider" is pinned. 1450629977 was not a registered provider, so
+        // LoginProviderResolver discarded it and fell back to the be_lastLoginProvider cookie
+        // and then to the primary provider anyway. Omitting it is behaviourally identical and
+        // lets an installation whose users can only use a non-default provider land on it
+        // directly instead of on a login form they cannot use.
+        $loginUrl = $this->getRequestSitePath($request) . '/typo3/index.php?login_status=login';
+
+        return (new RedirectResponse($loginUrl, 302))
+            ->withHeader('Set-Cookie', $cookie->set($request, $pendingAuthorization));
     }
 
     private function handleApproval(ServerRequestInterface $request, int $beUserId): ResponseInterface
@@ -297,19 +280,17 @@ class OAuthAuthorizeEndpoint
         $stream->write($html);
         $stream->rewind();
 
-        // Build cookie cleanup string with environment-aware security flags
-        $isHttps = $request->getUri()->getScheme() === 'https';
-        $cookieCleanupFlags = 'Max-Age=0; Path=/; HttpOnly; SameSite=Lax';
-        if ($isHttps) {
-            $cookieCleanupFlags .= '; Secure';
-        }
-
+        // The login round-trip is over once the consent screen renders, so the parked
+        // authorization is dropped here too — not only by OAuthLoginReturnMiddleware. Two
+        // independent clearing points mean a cookie that outlived its purpose cannot keep
+        // redirecting the user for the rest of its lifetime.
         return new Response(
             $stream,
             200,
             [
                 'Content-Type' => 'text/html; charset=utf-8',
-                'Set-Cookie' => 'tx_mcpserver_oauth=; ' . $cookieCleanupFlags
+                'Set-Cookie' => GeneralUtility::makeInstance(PendingAuthorizationCookie::class)
+                    ->clear($request),
             ]
         );
     }
