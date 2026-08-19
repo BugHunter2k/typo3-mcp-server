@@ -16,10 +16,25 @@ use Hn\McpServer\Controller\OAuthResumeController;
  * because an open redirector right behind the login form would be a phishing
  * vector. Deliberately no "module" option — BackendController::getStartupModule()
  * allows non-module routes as a redirect target.
+ *
+ * The "redirect" option is not optional for such a route. RouteRedirect::resolve()
+ * refuses any non-module route without "enable => true", and it discards *every*
+ * parameter unless "parameters" lists it — silently, which would leave the resume
+ * controller without the authorization it is supposed to resume.
  */
 return [
     OAuthResumeController::ROUTE_NAME => [
         'path' => '/mcp-oauth/resume',
         'target' => OAuthResumeController::class . '::resumeAction',
+        'redirect' => [
+            'enable' => true,
+            'parameters' => [
+                'client_id' => true,
+                'redirect_uri' => true,
+                'code_challenge' => true,
+                'code_challenge_method' => true,
+                'state' => true,
+            ],
+        ],
     ],
 ];

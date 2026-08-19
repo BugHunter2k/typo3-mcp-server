@@ -8,6 +8,8 @@ use Hn\McpServer\Controller\OAuthResumeController;
 use Hn\McpServer\Http\OAuthAuthorizeEndpoint;
 use Hn\McpServer\Tests\Functional\AbstractFunctionalTest;
 use Psr\Http\Message\ResponseInterface;
+use TYPO3\CMS\Backend\Routing\RouteRedirect;
+use TYPO3\CMS\Backend\Routing\Router;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
 use TYPO3\CMS\Core\Http\ServerRequest;
 use TYPO3\CMS\Core\Http\Uri;
@@ -125,6 +127,37 @@ class OAuthLoginReturnRedirectTest extends AbstractFunctionalTest
 
         self::assertSame(302, $response->getStatusCode());
         self::assertNotSame('', $response->getHeaderLine('Location'));
+    }
+
+    /**
+     * The route has to survive TYPO3's redirect resolution with its parameters intact.
+     *
+     * Guards two failure modes of Configuration/Backend/Routes.php that both end with
+     * the user in the backend instead of the consent screen: a non-module route
+     * without "redirect.enable" is refused outright, and without "redirect.parameters"
+     * RouteRedirect silently discards every parameter.
+     */
+    public function testResumeRouteSurvivesRedirectResolutionWithItsParameters(): void
+    {
+        $parameters = [
+            'client_id' => 'my-client',
+            'redirect_uri' => 'https://client.example.com/cb',
+            'code_challenge' => 'chal',
+            'code_challenge_method' => 'S256',
+            'state' => 'abc123',
+        ];
+
+        $router = GeneralUtility::makeInstance(Router::class);
+        $redirect = RouteRedirect::create(OAuthResumeController::ROUTE_NAME, $parameters);
+
+        // Throws for a non-module route that does not declare redirect.enable
+        $redirect->resolve($router);
+
+        self::assertSame(
+            $parameters,
+            $redirect->getParameters(),
+            'Every parameter must be allow-listed in redirect.parameters, otherwise they are dropped'
+        );
     }
 
     /**
