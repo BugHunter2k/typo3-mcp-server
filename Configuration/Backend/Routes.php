@@ -30,6 +30,7 @@ return [
             'enable' => true,
             'parameters' => [
                 'client_id' => true,
+                'client_name' => true,
                 'redirect_uri' => true,
                 'code_challenge' => true,
                 'code_challenge_method' => true,

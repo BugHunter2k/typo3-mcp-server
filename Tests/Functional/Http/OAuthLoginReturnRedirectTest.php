@@ -139,8 +139,12 @@ class OAuthLoginReturnRedirectTest extends AbstractFunctionalTest
      */
     public function testResumeRouteSurvivesRedirectResolutionWithItsParameters(): void
     {
+        // The full set both carriers agree on — PendingAuthorizationCookie::PARAMETERS and
+        // OAuthResumeController::AUTHORIZATION_PARAMETERS. A parameter missing from the
+        // route's allow-list is dropped without a word, so the whole set belongs here.
         $parameters = [
             'client_id' => 'my-client',
+            'client_name' => 'My MCP Client',
             'redirect_uri' => 'https://client.example.com/cb',
             'code_challenge' => 'chal',
             'code_challenge_method' => 'S256',

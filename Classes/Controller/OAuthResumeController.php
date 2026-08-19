@@ -33,9 +33,16 @@ class OAuthResumeController
     /**
      * Parameters carried across the login round-trip. Named explicitly so the
      * backend's own route parameters (token, route) stay out of the authorization URL.
+     *
+     * Kept in step with PendingAuthorizationCookie::PARAMETERS — the cookie is the other
+     * carrier for the same authorization, and a parameter present on one route but not the
+     * other means the consent screen differs depending on which one resumed it. Every entry
+     * here must also be allow-listed in Configuration/Backend/Routes.php, or RouteRedirect
+     * discards it silently.
      */
     private const AUTHORIZATION_PARAMETERS = [
         'client_id',
+        'client_name',
         'redirect_uri',
         'code_challenge',
         'code_challenge_method',
