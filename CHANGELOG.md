@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Authorize-endpoint errors are a page for a browser and JSON for a machine. The
+  endpoint is reached by a top-level browser navigation, so handing a person
+  `{"error":"invalid_request", …}` told them nothing they could act on; JSON is
+  still served when the caller asks for it via `Accept: application/json`, which
+  keeps `curl -H 'Accept: application/json'` working — that is how these
+  environments get diagnosed during a rollout. A blunt `str_contains` rather than
+  full q-value negotiation: there are two representations, browsers never ask for
+  JSON, and anything that does wants the machine one. Both render from the same
+  `error` / `error_description` pair so they cannot drift apart, and the code stays
+  visible on the page because a screenshot reading `invalid_request` is a support
+  request somebody can act on. This covers only the errors that must *not* be
+  redirected to the client (RFC 6749 §4.1.2.1: unknown client, unregistered
+  redirect_uri, CSRF failure, internal error) — where the redirect_uri is validated,
+  the client is told through the redirect instead. `/mcp_oauth/token`,
+  `/mcp_oauth/register` and the metadata endpoints are untouched: JSON is
+  spec-required there.
+- The catch-all no longer puts `$e->getMessage()` in the response. Internal detail
+  goes to the log (`LogManager`) and both representations carry a generic sentence
+  plus `server_error`. A page that now looks trustworthy while presenting an
+  internal message would be worse than the bare JSON ever was.
 - The consent screen now names the installation it is granting access to: the
   configured `SYS/sitename` plus the request host, in a block under the heading.
   A consent screen exists so the user can decide, and with a fleet of
