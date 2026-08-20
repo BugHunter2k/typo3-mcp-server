@@ -6,8 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- `McpEndpoint` no longer writes access tokens to the log. Its debug logging dumped
+  every request header and every query parameter verbatim on **every** request —
+  and `extractToken()` accepts the bearer both in `Authorization` and, for backward
+  compatibility, in the `token` query parameter. So a usable credential was written
+  to the PHP error log of every installation on every MCP call. Both are now
+  redacted, and the separate "Received token: <first 20 chars>" line is gone: a
+  20-character prefix is still part of a live credential, and the `be_user_uid`
+  logged after successful validation is the identifier actually worth having.
+  `McpEndpointLogHygieneTest` asserts the token never appears — from either
+  carrier, not even as a prefix — by pointing `error_log` at a temporary file and
+  reading it back.
+  **Operational note:** existing PHP error logs on already-deployed environments
+  still contain tokens and should be rotated; tokens live 30 days
+  (`OAuthService::TOKEN_EXPIRY_SECONDS`), so a leaked one stays valid that long.
+
 ### Changed
 
+- `McpEndpoint` logs one diagnostic line per request naming the method, the status
+  the MCP SDK adapter resolved, and whether an `Mcp-Session-Id` came with it. Added
+  to settle where `Session termination failed: 202` comes from: the gateway's MCP
+  client terminates each backend session with a `DELETE`, and its SDK accepts only
+  200/204 — but `HttpServerTransport::handleDeleteRequest()` expires the session and
+  answers **204**, while 202 is what that transport returns elsewhere for "accepted,
+  nothing to send back". So the `DELETE` is probably not reaching that handler at
+  all, which would mean backend sessions are left to time out (`session_timeout`,
+  1800s) rather than being closed. This line distinguishes the two.
 - The three OAuth screens (consent form, authorization code, notice/error) now
   share one document shell and one palette instead of carrying a copy of the CSS
   each — which is how the consent form and the code page had drifted into slightly

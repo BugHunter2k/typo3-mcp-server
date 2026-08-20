@@ -34,6 +34,11 @@ class McpEndpoint
     use RequestUrlTrait;
 
     /**
+     * Headers whose value must never reach the log. Lower-case for comparison.
+     */
+    private const REDACTED_HEADERS = ['authorization', 'cookie', 'proxy-authorization'];
+
+    /**
      * eID entry point via __invoke method
      */
     public function __invoke(ServerRequestInterface $request): ResponseInterface
@@ -50,16 +55,28 @@ class McpEndpoint
             $container = GeneralUtility::getContainer();
             $serverFactory = $container->get(McpServerFactory::class);
 
-            // Debug: Log all request details
+            // Debug: Log all request details.
+            //
+            // Credentials are redacted first. extractToken() accepts the bearer either in
+            // the Authorization header or — for backward compatibility — in the "token"
+            // query parameter, and both were previously written out verbatim on every
+            // request, putting usable access tokens into the PHP error log of every
+            // installation.
             $headers = [];
             foreach ($request->getHeaders() as $name => $values) {
-                $headers[$name] = implode(', ', $values);
+                $headers[$name] = in_array(strtolower((string)$name), self::REDACTED_HEADERS, true)
+                    ? '<redacted>'
+                    : implode(', ', $values);
             }
             $queryParams = $request->getQueryParams();
+            $loggableQuery = $queryParams;
+            if (isset($loggableQuery['token'])) {
+                $loggableQuery['token'] = '<redacted>';
+            }
 
             error_log("MCP: Request method: " . $request->getMethod());
             error_log("MCP: Request headers: " . json_encode($headers));
-            error_log("MCP: Query params: " . json_encode($queryParams));
+            error_log("MCP: Query params: " . json_encode($loggableQuery));
 
             // Check if this is an auth header test request
             if (isset($queryParams['test']) && $queryParams['test'] === 'auth') {
@@ -74,14 +91,17 @@ class McpEndpoint
                 return $this->createUnauthorizedResponse('Missing authentication token', $request);
             }
 
-            // Log token for debugging (first 20 chars only for security)
-            error_log("MCP: Received token: " . substr($token, 0, 20) . "...");
+            // Only that a token arrived, never any part of it. A 20-character prefix is
+            // still a fragment of a live credential and buys no diagnostic value the
+            // length does not — whether validation succeeded is logged below, with the
+            // resolved be_user_uid, which is the identifier worth having.
+            error_log("MCP: Bearer token present (" . strlen($token) . " chars)");
 
             $oauthService = GeneralUtility::makeInstance(OAuthService::class);
             $tokenInfo = $oauthService->validateToken($token, $request);
 
             if (!$tokenInfo) {
-                error_log("MCP: Token validation failed for: " . substr($token, 0, 20) . "...");
+                error_log("MCP: Token validation failed");
                 return $this->createUnauthorizedResponse('Invalid or expired token', $request);
             }
 
@@ -142,6 +162,21 @@ class McpEndpoint
 
             // Get the status code set by the adapter
             $statusCode = http_response_code() ?: 200;
+
+            // Diagnostic: which method got which status, and whether a session id came
+            // with it. The gateway's MCP client terminates each backend session with a
+            // DELETE and logs "Session termination failed: 202" — but the SDK's
+            // handleDeleteRequest() expires the session and answers 204, and 202 is what
+            // it returns elsewhere for "accepted, nothing to send back". So the DELETE is
+            // most likely never reaching that handler, which would mean sessions are left
+            // to time out (session_timeout, 1800s) instead of being closed. This line
+            // says which of the two it is.
+            error_log(sprintf(
+                'MCP: %s -> %d (session id %s)',
+                $request->getMethod(),
+                $statusCode,
+                $request->getHeaderLine('Mcp-Session-Id') !== '' ? 'present' : 'absent'
+            ));
 
             // Try to decode as JSON, fallback to plain text
             $decodedOutput = json_decode($output, true);
