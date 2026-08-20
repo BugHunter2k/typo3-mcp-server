@@ -7,6 +7,7 @@ namespace Hn\McpServer\Http;
 use Mcp\Server\HttpServerRunner;
 use Mcp\Server\Transport\Http\StandardPhpAdapter;
 use Mcp\Server\Transport\Http\FileSessionStore;
+use TYPO3\CMS\Core\Configuration\ExtensionConfiguration;
 use TYPO3\CMS\Core\Core\Environment;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
@@ -38,6 +39,33 @@ class McpEndpoint
      */
     private const REDACTED_HEADERS = ['authorization', 'cookie', 'proxy-authorization'];
 
+    private ?bool $verboseLogging = null;
+
+    /**
+     * Is the per-request trace switched on (extension setting ``debugLogging``)?
+     *
+     * Off by default: it is several lines per request, and on an installation serving a
+     * few hundred MCP calls a day it buries everything else in the PHP error log —
+     * including the authentication failures, which are logged regardless of this setting
+     * because they are what you go looking for when something is wrong.
+     */
+    private function isVerboseLogging(): bool
+    {
+        if ($this->verboseLogging === null) {
+            try {
+                $configured = GeneralUtility::makeInstance(ExtensionConfiguration::class)
+                    ->get('mcp_server', 'debugLogging');
+            } catch (\Exception) {
+                // No extension configuration written yet (fresh install) — an expected
+                // state, and "not configured" means "not enabled".
+                $configured = false;
+            }
+            $this->verboseLogging = (bool)$configured;
+        }
+
+        return $this->verboseLogging;
+    }
+
     /**
      * eID entry point via __invoke method
      */
@@ -62,21 +90,24 @@ class McpEndpoint
             // query parameter, and both were previously written out verbatim on every
             // request, putting usable access tokens into the PHP error log of every
             // installation.
-            $headers = [];
-            foreach ($request->getHeaders() as $name => $values) {
-                $headers[$name] = in_array(strtolower((string)$name), self::REDACTED_HEADERS, true)
-                    ? '<redacted>'
-                    : implode(', ', $values);
-            }
             $queryParams = $request->getQueryParams();
-            $loggableQuery = $queryParams;
-            if (isset($loggableQuery['token'])) {
-                $loggableQuery['token'] = '<redacted>';
-            }
 
-            error_log("MCP: Request method: " . $request->getMethod());
-            error_log("MCP: Request headers: " . json_encode($headers));
-            error_log("MCP: Query params: " . json_encode($loggableQuery));
+            if ($this->isVerboseLogging()) {
+                $headers = [];
+                foreach ($request->getHeaders() as $name => $values) {
+                    $headers[$name] = in_array(strtolower((string)$name), self::REDACTED_HEADERS, true)
+                        ? '<redacted>'
+                        : implode(', ', $values);
+                }
+                $loggableQuery = $queryParams;
+                if (isset($loggableQuery['token'])) {
+                    $loggableQuery['token'] = '<redacted>';
+                }
+
+                error_log("MCP: Request method: " . $request->getMethod());
+                error_log("MCP: Request headers: " . json_encode($headers));
+                error_log("MCP: Query params: " . json_encode($loggableQuery));
+            }
 
             // Check if this is an auth header test request
             if (isset($queryParams['test']) && $queryParams['test'] === 'auth') {
@@ -95,7 +126,9 @@ class McpEndpoint
             // still a fragment of a live credential and buys no diagnostic value the
             // length does not — whether validation succeeded is logged below, with the
             // resolved be_user_uid, which is the identifier worth having.
-            error_log("MCP: Bearer token present (" . strlen($token) . " chars)");
+            if ($this->isVerboseLogging()) {
+                error_log("MCP: Bearer token present (" . strlen($token) . " chars)");
+            }
 
             $oauthService = GeneralUtility::makeInstance(OAuthService::class);
             $tokenInfo = $oauthService->validateToken($token, $request);
@@ -105,7 +138,9 @@ class McpEndpoint
                 return $this->createUnauthorizedResponse('Invalid or expired token', $request);
             }
 
-            error_log("MCP: Token validation successful for user: " . $tokenInfo['be_user_uid']);
+            if ($this->isVerboseLogging()) {
+                error_log("MCP: Token validation successful for user: " . $tokenInfo['be_user_uid']);
+            }
 
             // Set up TYPO3 backend context for the authenticated user
             $this->setupBackendUserContext($tokenInfo['be_user_uid']);
@@ -171,12 +206,14 @@ class McpEndpoint
             // most likely never reaching that handler, which would mean sessions are left
             // to time out (session_timeout, 1800s) instead of being closed. This line
             // says which of the two it is.
-            error_log(sprintf(
-                'MCP: %s -> %d (session id %s)',
-                $request->getMethod(),
-                $statusCode,
-                $request->getHeaderLine('Mcp-Session-Id') !== '' ? 'present' : 'absent'
-            ));
+            if ($this->isVerboseLogging()) {
+                error_log(sprintf(
+                    'MCP: %s -> %d (session id %s)',
+                    $request->getMethod(),
+                    $statusCode,
+                    $request->getHeaderLine('Mcp-Session-Id') !== '' ? 'present' : 'absent'
+                ));
+            }
 
             // Try to decode as JSON, fallback to plain text
             $decodedOutput = json_decode($output, true);

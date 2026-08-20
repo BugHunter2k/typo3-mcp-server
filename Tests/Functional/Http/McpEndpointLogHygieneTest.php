@@ -22,16 +22,23 @@ class McpEndpointLogHygieneTest extends AbstractFunctionalTest
     private const SECRET = 'mcpt_bearer_that_must_not_be_logged_0123456789';
 
     private mixed $previousRequest;
+    private mixed $previousConfiguration;
 
     protected function setUp(): void
     {
         parent::setUp();
         $this->previousRequest = $GLOBALS['TYPO3_REQUEST'] ?? null;
+        $this->previousConfiguration = $GLOBALS['TYPO3_CONF_VARS']['EXTENSIONS']['mcp_server'] ?? null;
+        // There is nothing to redact unless the trace is switched on, so these run with
+        // debugLogging enabled: that is the dangerous configuration and the one worth
+        // guarding. testNothingIsTracedWhileTheSwitchIsOff() turns it back off.
+        $GLOBALS['TYPO3_CONF_VARS']['EXTENSIONS']['mcp_server']['debugLogging'] = '1';
     }
 
     protected function tearDown(): void
     {
         $GLOBALS['TYPO3_REQUEST'] = $this->previousRequest;
+        $GLOBALS['TYPO3_CONF_VARS']['EXTENSIONS']['mcp_server'] = $this->previousConfiguration;
         parent::tearDown();
     }
 
@@ -74,6 +81,26 @@ class McpEndpointLogHygieneTest extends AbstractFunctionalTest
 
         self::assertStringNotContainsString(substr(self::SECRET, 0, 20), $log);
         self::assertStringContainsString('Bearer token present', $log);
+    }
+
+    /**
+     * The default. Several lines per request bury everything else in the PHP error log,
+     * including the authentication failures — which stay logged either way, because they
+     * are what you go looking for when something is wrong.
+     */
+    public function testNothingIsTracedWhileTheSwitchIsOff(): void
+    {
+        $GLOBALS['TYPO3_CONF_VARS']['EXTENSIONS']['mcp_server']['debugLogging'] = '0';
+
+        $log = $this->captureLog(
+            (new ServerRequest(new Uri('https://example.com/mcp'), 'POST'))
+                ->withHeader('Authorization', 'Bearer ' . self::SECRET)
+        );
+
+        self::assertStringNotContainsString('MCP: Request headers', $log);
+        self::assertStringNotContainsString('Bearer token present', $log);
+        self::assertStringNotContainsString(self::SECRET, $log);
+        self::assertStringContainsString('Token validation failed', $log, 'Failures stay logged');
     }
 
     public function testTheDiagnosticNamesTheMethodAndStatus(): void

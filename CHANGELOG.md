@@ -25,6 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `McpEndpoint`'s per-request trace is now switchable and **off by default**, via the
+  new `debugLogging` extension setting. It used to run unconditionally: several lines
+  per request, which on an installation serving a few hundred MCP calls a day buries
+  everything else in the PHP error log — including the authentication failures. Those
+  stay logged regardless of the setting, because they are what you go looking for when
+  something is wrong; the request dump, the "token present" line, the successful
+  validation and the method→status diagnostic sit behind the switch. Turn it on to
+  diagnose one installation, then turn it back off.
 - `McpEndpoint` logs one diagnostic line per request naming the method, the status
   the MCP SDK adapter resolved, and whether an `Mcp-Session-Id` came with it. Added
   to settle where `Session termination failed: 202` comes from: the gateway's MCP
