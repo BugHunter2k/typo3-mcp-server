@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The three OAuth screens (consent form, authorization code, notice/error) now
+  share one document shell and one palette instead of carrying a copy of the CSS
+  each — which is how the consent form and the code page had drifted into slightly
+  different cards. Every colour is a custom property defined on a bare `:root` and
+  redefined under `prefers-color-scheme: dark`, so these screens follow the
+  operating system instead of being white-only. The light values are deliberately
+  the ones that were already in place: this unifies and adds a dark scheme, it is
+  not a redesign of a screen editors recognise. `OAuthPageShellTest` asserts the
+  three style blocks are byte-identical, that neither colour scheme is left
+  undefined, that no page references an external asset (the endpoint answers before
+  TYPO3 resolves a site, so there is no reliable base URL) and that no colour
+  literal escapes the token block — a hardcoded colour is invisible in dark mode.
+  The notice page's error chip is `.errorcode`, not `.code`: the code page owns
+  `.code` for its prominent block, and one class meaning two things across shared
+  styles is how copies drift apart in the first place.
+
 ### Fixed
 
 - Authorize-endpoint errors are a page for a browser and JSON for a machine. The
