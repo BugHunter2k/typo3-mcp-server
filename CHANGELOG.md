@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The consent screen now names the installation it is granting access to: the
+  configured `SYS/sitename` plus the request host, in a block under the heading.
+  A consent screen exists so the user can decide, and with a fleet of
+  similarly-named environments behind one MCP connector "Authorize MCP Access"
+  alone withheld the fact the decision turns on. The host is the discriminator and
+  the one value the user can cross-check against their address bar. No
+  application-context badge: it is not reliably configured on every installation,
+  and a "Production" label on a staging box would be worse than none.
+- The Cancel button on the consent screen works. It was `type="button"` with
+  `onclick="window.close()"`, which browsers refuse for a tab they did not open via
+  `window.open` — so it did nothing at all, and the client sat waiting for a
+  callback that was never coming. It is now a submit that the new `handleDenial()`
+  answers per RFC 6749 §4.1.2.1: `error=access_denied` (plus `state`) on the
+  registered `redirect_uri`, or a short page when there is no `redirect_uri` to
+  report to. The `redirect_uri` is validated against the registered client
+  **before** redirecting to it — without that the endpoint would be an open
+  redirector reachable with a crafted link. The CSRF token is required for a
+  refusal too, and is rotated afterwards.
+- Removed the `user_id` hidden field from the consent form. It was never read —
+  `handleApproval()` takes the uid from `$GLOBALS['BE_USER']` — but a form field of
+  that name reads as authoritative, and had anything ever started trusting it, the
+  user would have been choosing their own uid. (The `redirect_uri`,
+  `code_challenge` and `code_challenge_method` hidden fields are likewise unread,
+  those paths take them from the query; left in place for now.)
 - The OAuth authorization link now survives an SSO login, not just a password
   login. The pending authorization was carried across the backend login only in
   the login URL's `redirect`/`redirectParams` query pair, and that query string
