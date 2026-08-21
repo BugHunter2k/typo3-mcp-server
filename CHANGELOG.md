@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The `serverInfo.version` of the initialize handshake now carries the installed
+  commit: `dev-lia-main+5c3048db2c04… (TYPO3 13.4.34)`. The declared version
+  cannot identify a build for anyone installing from a branch — in a Composer
+  install TYPO3 reports the Composer version, so every commit of a branch calls
+  itself `dev-lia-main` — which makes "is this installation current?"
+  unanswerable over the wire. The commit comes from Composer's runtime API
+  (`InstalledVersions::getReference()`) and sits in the semver-sanctioned build
+  position, so the string remains a valid version for anything that parses it,
+  and a client can hold it against the delivery branch's head. Omitted when
+  Composer does not know the package (a classic install, or an extension dropped
+  into `typo3conf/ext`), which degrades to exactly the previous output rather
+  than to a wrong commit. `McpServerFactoryTest` pins the shape, because the LIA
+  gateway parses it.
+
 ### Security
 
 - `McpEndpoint` no longer writes access tokens to the log. Its debug logging dumped
