@@ -41,6 +41,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The FlexForm tool descriptions now state the contract the code actually
+  enforces, and the one it does not. `GetFlexFormSchema` was 145 characters that
+  did not mention it is the prerequisite for a FlexForm write, nor that the
+  identifier is the record's CType — the entry point to FlexForm handling was the
+  least documented tool in the set. `WriteTable` explained FlexForm twice in
+  nearly identical words, so naming the danger cost nothing net: passing raw XML
+  is accepted, stored verbatim, and drops every value the string omits, silently
+  and reported as success (`WriteTableTool.php:1591`). That path is now
+  documented as forbidden at both altitudes — the imperative in the tool
+  description, the reason on the `data` parameter — and a copyable `pi_flexform`
+  example was added to `examples`. `ReadTable` says the value it returns can be
+  written straight back. `TECHNICAL_OVERVIEW.md` said "FlexForm fields accept
+  JSON (auto-converted to XML)", which reads as if XML were the interface.
+  Descriptions only: the destructive XML path itself is unchanged.
 - `McpEndpoint`'s per-request trace is now switchable and **off by default**, via the
   new `debugLogging` extension setting. It used to run unconditionally: several lines
   per request, which on an installation serving a few hundred MCP calls a day buries

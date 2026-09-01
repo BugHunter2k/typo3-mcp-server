@@ -117,10 +117,10 @@ The MCP Server provides these tools for interacting with TYPO3:
 - **ReadTable** - Read records from any TYPO3 table with filtering, pagination, and optional field selection. Embedded inline relations return full child records, independent relations return UIDs. Hidden records included, deleted excluded. Max limit: 1000
 - **Search** - Find content across tables using full-text search
 - **GetTableSchema** - Understand table structure and field types for a specific record type. Types may be filtered by backend TSconfig
-- **GetFlexFormSchema** - Get plugin configuration schemas
+- **GetFlexFormSchema** - Inspect a plugin FlexForm DataStructure (declared fields, types, allowed values). Prerequisite for FlexForm writes; the identifier is the record's CType
 
 ### Content Modification
-- **WriteTable** - Create, update, translate, move, or delete records (safely in workspace). Inline relations use replace-all semantics on update — include existing UIDs to keep them. Supports `{"uid": N}` to reference existing children with optional field updates. Nested inline relations and file field references supported. FlexForm fields accept JSON (auto-converted to XML)
+- **WriteTable** - Create, update, translate, move, or delete records (safely in workspace). Inline relations use replace-all semantics on update — include existing UIDs to keep them. Supports `{"uid": N}` to reference existing children with optional field updates. Nested inline relations and file field references supported. FlexForm fields take a nested JSON object as a partial patch (omitted fields keep their stored values, each field must be declared by the record's DataStructure) — never raw XML, which is stored verbatim and drops every value it omits
 
 ### File Management
 - **ListStorages** - List available file storages with capabilities (public, writable, default)

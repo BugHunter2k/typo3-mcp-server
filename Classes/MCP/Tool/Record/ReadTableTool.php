@@ -102,7 +102,7 @@ class ReadTableTool extends AbstractRecordTool
 
         return [
             'description' => 'Read records from TYPO3 tables with filtering, pagination, and relation embedding. Also provides access to the fileadmin: read sys_file to browse available files and images. By default, returns records from ALL languages mixed together (matching TYPO3\'s list module behavior). Use the language parameter to filter to a specific language. For page content, use pid filter instead of individual record lookups. ' .
-                'FLEXFORM FIELDS (e.g. pi_flexform) are returned as nested JSON objects across all sheets, e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}} — the same shape WriteTable accepts.',
+                'FLEXFORM FIELDS (e.g. pi_flexform) are returned as nested JSON objects across all sheets, e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}} — the same shape WriteTable accepts, so a value read here can be written straight back. Send that JSON, never the stored XML.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => $properties,
