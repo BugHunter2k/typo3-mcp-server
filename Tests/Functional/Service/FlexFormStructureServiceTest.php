@@ -21,6 +21,7 @@ class FlexFormStructureServiceTest extends FunctionalTestCase
     protected array $testExtensionsToLoad = [
         'news',
         'mcp_server',
+        '../Tests/Functional/Fixtures/Extensions/test_flexform',
     ];
 
     protected function setUp(): void
@@ -90,6 +91,50 @@ class FlexFormStructureServiceTest extends FunctionalTestCase
         $this->assertIsArray($structure);
         $this->assertArrayHasKey('sDEF', $structure['sheets']);
         $this->assertArrayHasKey('additional', $structure['sheets']);
+    }
+
+    /**
+     * Test that a record type's own DataStructure is resolved, whichever place
+     * the running core keeps it in. The `test_multisheetflex` fixture registers
+     * through ExtensionManagementUtility::addPiFlexFormValue(), which writes
+     * `columns.pi_flexform.config.ds['*,<CType>']` on TYPO3 13 and
+     * `types.<CType>.columnsOverrides.pi_flexform.config.ds` on TYPO3 14 — the
+     * latter is resolvable only when FlexFormTools gets the table's TcaSchema.
+     *
+     * Unlike the news-based tests above this uses an in-repo fixture, so the
+     * coverage does not depend on how a third-party extension registers.
+     */
+    public function testResolveDataStructureForRecordWithRecordTypeOwnedDataStructure(): void
+    {
+        $service = GeneralUtility::makeInstance(FlexFormStructureService::class);
+
+        $row = ['CType' => 'test_multisheetflex', 'list_type' => '', 'pi_flexform' => ''];
+        $structure = $service->resolveDataStructureForRecord('tt_content', 'pi_flexform', $row);
+
+        $this->assertIsArray($structure);
+        $this->assertSame([
+            'settings.contacts' => ['sDEF'],
+            'settings.sortOrder' => ['sDEF'],
+            'persistence.storagePid' => ['persistence'],
+        ], $service->getFieldSheetMap($structure));
+    }
+
+    /**
+     * Test the same DataStructure resolved from the identifier alone, the path
+     * GetFlexFormSchema takes when no record uid is given
+     */
+    public function testResolveDataStructureByIdentifierWithRecordTypeOwnedDataStructure(): void
+    {
+        $service = GeneralUtility::makeInstance(FlexFormStructureService::class);
+
+        $structure = $service->resolveDataStructure('tt_content', 'pi_flexform', 'test_multisheetflex', null);
+
+        $this->assertIsArray($structure);
+        $this->assertSame([
+            'settings.contacts' => ['sDEF'],
+            'settings.sortOrder' => ['sDEF'],
+            'persistence.storagePid' => ['persistence'],
+        ], $service->getFieldSheetMap($structure));
     }
 
     /**

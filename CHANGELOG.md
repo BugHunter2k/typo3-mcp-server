@@ -76,6 +76,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- FlexForm DataStructures resolve again on TYPO3 14. `FlexFormStructureService`
+  called `FlexFormTools::getDataStructureIdentifier()` and
+  `::parseDataStructureByIdentifier()` without the schema argument TYPO3 14 added
+  to both. Without it neither can look up a DataStructure at all: they throw
+  `InvalidTcaSchemaException` (1753182123 / 1753182125) before reading any `ds`,
+  and `resolveFromCandidates()` swallows that per candidate — so **every**
+  FlexForm resolution returned null on TYPO3 14. `GetFlexFormSchema` answered
+  "FlexForm schema not found" and `WriteTable` refused FlexForm values for every
+  plugin, while `GetTableSchema` kept listing the identifier (it reads the
+  TcaSchema sub-schema, which was never affected) and `ReadTable` kept returning
+  stored values — a contradiction that made the failure look like a lookup bug
+  rather than a version bug.
+  The two cores resolve by opposite mechanisms: TYPO3 13 picks a `ds` map entry
+  off the passed field TCA by `ds_pointerField`, and forbids overriding `ds`
+  through `columnsOverrides`; TYPO3 14 dropped `ds_pointerField`, made `ds` a
+  single string, and gives a record type its own DataStructure *precisely* by
+  overriding that string in `types.<type>.columnsOverrides.<field>.config.ds` —
+  the shape `ExtensionUtility::registerPlugin()` writes, i.e. the normal Extbase
+  plugin. Handing FlexFormTools the table's `TcaSchema` lets it do that lookup
+  itself; no `columnsOverrides` merging of our own is needed for resolution.
+  The field TCA is still merged with the record type's `columnsOverrides` on
+  TYPO3 14 before it goes into the DataStructure events, because that is what
+  FormEngine hands its own listeners (`TcaColumnsOverrides` runs before
+  `TcaFlexPrepare`) — so a listener reading `config.ds` sees what the backend
+  form would show it. Every FlexFormTools call is version-gated on
+  `Typo3Version::getMajorVersion()`, since the TYPO3 13 signatures do not accept
+  the argument.
+  `FlexFormStructureServiceTest` now also covers the in-repo `test_multisheetflex`
+  fixture, whose `addPiFlexFormValue()` registration lands in the `ds` map on
+  TYPO3 13 and in `columnsOverrides` on TYPO3 14 — pinning the resolution result
+  rather than the mechanism, so it holds on both and no longer depends on how
+  EXT:news chooses to register.
+
 - Authorize-endpoint errors are a page for a browser and JSON for a machine. The
   endpoint is reached by a top-level browser navigation, so handing a person
   `{"error":"invalid_request", …}` told them nothing they could act on; JSON is

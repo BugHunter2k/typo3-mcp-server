@@ -6,6 +6,8 @@ namespace Hn\McpServer\Service;
 
 use TYPO3\CMS\Backend\Utility\BackendUtility;
 use TYPO3\CMS\Core\Configuration\FlexForm\FlexFormTools;
+use TYPO3\CMS\Core\Information\Typo3Version;
+use TYPO3\CMS\Core\Schema\TcaSchemaFactory;
 use TYPO3\CMS\Core\SingletonInterface;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 
@@ -19,9 +21,30 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
  *
  * Shared by GetFlexFormSchemaTool (schema output) and WriteTableTool
  * (DS-aware sheet mapping on write).
+ *
+ * TYPO3 13 and 14 resolve a DataStructure by opposite mechanisms, so every
+ * FlexFormTools call here is version-aware (see coreResolvesFlexFormBySchema):
+ *
+ * - TYPO3 13 reads the `ds` map off the passed field TCA and picks an entry by
+ *   the record's `ds_pointerField` values (tt_content: `list_type,CType`).
+ *   Overriding `ds` via columnsOverrides is explicitly forbidden there.
+ * - TYPO3 14 removed `ds_pointerField`. `ds` is a single string, and a record
+ *   type gets its own DataStructure precisely by overriding that string in
+ *   `types.{type}.columnsOverrides.{field}.config.ds` — the shape
+ *   ExtensionUtility::registerPlugin() writes. FlexFormTools resolves it from
+ *   the table's TcaSchema, which it only has when callers pass it: without the
+ *   schema argument it throws InvalidTcaSchemaException (1753182123) before
+ *   looking at any `ds` at all.
  */
 class FlexFormStructureService implements SingletonInterface
 {
+    protected TcaSchemaFactory $tcaSchemaFactory;
+
+    public function __construct()
+    {
+        $this->tcaSchemaFactory = GeneralUtility::makeInstance(TcaSchemaFactory::class);
+    }
+
     /**
      * Resolve a FlexForm DataStructure to its normalized array form via
      * TYPO3's FlexFormTools, running the DataStructure identifier events.
@@ -101,23 +124,38 @@ class FlexFormStructureService implements SingletonInterface
      * Walk candidate rows and return the first DataStructure that resolves,
      * parses, and declares fields.
      *
-     * A candidate row must resolve to a specific DataStructure. When the
-     * pointer values do not match, FlexFormTools silently falls back to the
-     * `default` ds key (see getDataStructureIdentifierFromTcaArray) —
-     * accepting that unconditionally would make every unknown identifier
-     * "resolve" to the default DS, so `default` resolutions only count for
-     * candidates flagged `allowDefault`.
+     * A candidate row must resolve to a specific DataStructure. When the row's
+     * type carries no DataStructure of its own, FlexFormTools silently falls
+     * back to the `default` ds key (TYPO3 13:
+     * getDataStructureIdentifierFromTcaArray, TYPO3 14: the base-field branch
+     * of getDataStructureIdentifierFromTcaSchema) — accepting that
+     * unconditionally would make every unknown identifier "resolve" to the
+     * default DS, so `default` resolutions only count for candidates flagged
+     * `allowDefault`.
      *
      * @param array<int, array{row: array<string, mixed>, allowDefault: bool}> $candidates
      */
     private function resolveFromCandidates(string $table, string $field, array $candidates): ?array
     {
-        $fieldTca = $this->getFlexFieldTca($table, $field);
+        $baseFieldTca = $this->getFlexFieldTca($table, $field);
         $flexFormTools = GeneralUtility::makeInstance(FlexFormTools::class);
+        $schema = $this->coreResolvesFlexFormBySchema() ? $this->tcaSchemaFactory->get($table) : null;
 
         foreach ($candidates as $candidate) {
+            // The field TCA is only what the DataStructure events receive; on
+            // TYPO3 14 the DataStructure itself comes from the schema. Hand the
+            // events the same record-type-resolved TCA that FormEngine hands
+            // its own listeners (TcaColumnsOverrides runs before
+            // TcaFlexPrepare), so a listener reading `config.ds` sees what the
+            // backend form would show it.
+            $fieldTca = $schema === null
+                ? $baseFieldTca
+                : $this->applyRecordTypeOverrides($table, $field, $baseFieldTca, $candidate['row']);
+
             try {
-                $dsIdentifier = $flexFormTools->getDataStructureIdentifier($fieldTca, $table, $field, $candidate['row']);
+                $dsIdentifier = $schema === null
+                    ? $flexFormTools->getDataStructureIdentifier($fieldTca, $table, $field, $candidate['row'])
+                    : $flexFormTools->getDataStructureIdentifier($fieldTca, $table, $field, $candidate['row'], $schema);
             } catch (\Throwable) {
                 // Pointer fields did not match a DataStructure for this row —
                 // try the next candidate.
@@ -132,7 +170,9 @@ class FlexFormStructureService implements SingletonInterface
             }
 
             try {
-                $structure = $flexFormTools->parseDataStructureByIdentifier($dsIdentifier);
+                $structure = $schema === null
+                    ? $flexFormTools->parseDataStructureByIdentifier($dsIdentifier)
+                    : $flexFormTools->parseDataStructureByIdentifier($dsIdentifier, $schema);
             } catch (\Throwable) {
                 continue;
             }
@@ -231,5 +271,35 @@ class FlexFormStructureService implements SingletonInterface
         }
 
         return $fieldTca;
+    }
+
+    /**
+     * Field TCA with the record type's `columnsOverrides` applied, the way
+     * TYPO3\CMS\Backend\Form\FormDataProvider\TcaColumnsOverrides does it for
+     * FormEngine. TYPO3 14 only.
+     *
+     * @param array<string, mixed> $fieldTca
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function applyRecordTypeOverrides(string $table, string $field, array $fieldTca, array $row): array
+    {
+        $recordType = BackendUtility::getTCAtypeValue($table, $row);
+        $overrides = $GLOBALS['TCA'][$table]['types'][$recordType]['columnsOverrides'][$field] ?? [];
+
+        return array_replace_recursive($fieldTca, $overrides);
+    }
+
+    /**
+     * Whether the running TYPO3 resolves FlexForm DataStructures from the
+     * table's TcaSchema instead of from the `ds` map on the field TCA. Changed
+     * in TYPO3 14, which added the schema argument to
+     * FlexFormTools::getDataStructureIdentifier() and
+     * ::parseDataStructureByIdentifier() and made it mandatory in practice —
+     * both throw without it.
+     */
+    private function coreResolvesFlexFormBySchema(): bool
+    {
+        return GeneralUtility::makeInstance(Typo3Version::class)->getMajorVersion() >= 14;
     }
 }
