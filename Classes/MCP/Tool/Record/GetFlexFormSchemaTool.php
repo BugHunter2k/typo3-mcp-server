@@ -21,7 +21,10 @@ class GetFlexFormSchemaTool extends AbstractRecordTool
     public function getSchema(): array
     {
         return [
-            'description' => 'Get schema information for a specific FlexForm field. Returns field definitions, types, and configuration options for the FlexForm DataStructure.',
+            'description' => 'Inspect the FlexForm DataStructure of a plugin field: which fields it declares, their types, and their allowed values. '
+                . 'Call this BEFORE writing a FlexForm field with WriteTable — WriteTable rejects every field the resolved DataStructure does not declare. '
+                . 'The identifier is the record type; TYPO3 14 keys DataStructures directly by CType (e.g. "news_pi1", "form_formframework"), and GetTableSchema lists the identifiers available per table. '
+                . 'Field names come back in the nested shape WriteTable and ReadTable use, so a declared path settings.orderBy is written as {"settings": {"orderBy": "..."}}.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [

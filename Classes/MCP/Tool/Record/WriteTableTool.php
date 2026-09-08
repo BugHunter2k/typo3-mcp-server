@@ -60,8 +60,7 @@ class WriteTableTool extends AbstractRecordTool
                 'INLINE RELATIONS (CRITICAL): On update, passing an inline field REPLACES ALL existing children — omitted children are deleted (embedded) or unlinked (independent). ' .
                 'To keep existing children, include their UIDs: [2546, 2547, {"CType": "textmedia", "header": "New"}]. To update an existing child: {"uid": 2546, "header": "Updated"}. Order in the array defines sorting. ' .
                 'Nested inline relations are supported: child record data may itself contain inline arrays. ' .
-                'FLEXFORM FIELDS: Pass as nested JSON objects (auto-converted to XML), e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}}. ' .
-                'The value is a PARTIAL PATCH: fields not included keep their stored values. Each field must be declared by the record type\'s FlexForm schema (see GetFlexFormSchema) — unknown fields are rejected. ' .
+                'FLEXFORM FIELDS: Pass a nested JSON object and never FlexForm XML — see the data parameter for the contract, and GetFlexFormSchema for the field names. ' .
                 'ORDERING: When creating multiple elements on a page, chain positions: create first with "bottom", then "after:{uid}" for each next. ' .
                 'RTE LINKS (bodytext): Use TYPO3 link syntax — "t3://page?uid=<pageId>" for pages, "t3://page?uid=<pageId>#c<uid>" to jump to a content element (frontend anchors are id="c<uid>"; GetPage lists them). ' .
                 'Before creating content, use GetPage + ReadTable to understand page structure and existing content.',
@@ -95,8 +94,11 @@ class WriteTableTool extends AbstractRecordTool
                             'FILE FIELDS (image, media, assets): Array of sys_file UIDs [3, 4] or objects [{"uid_local": 3, "title": "...", "alternative": "...", "description": "Caption"}]. ' .
                             'SEARCH-AND-REPLACE (update only): For text/input/email/link/slug fields, pass [{"search": "old", "replace": "new"}] instead of full text. ' .
                             'Add "replaceAll": true per operation if search may match multiple times. Only these field types support search-and-replace. ' .
-                            'FLEXFORM: Pass as nested JSON object, e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}} — auto-converted to XML. ' .
-                            'Partial patch semantics: omitted FlexForm fields keep their stored values; fields must exist in the FlexForm schema (GetFlexFormSchema).',
+                            'FLEXFORM (e.g. pi_flexform): Pass a nested JSON object, e.g. {"settings": {"orderBy": "datetime"}, "persistence": {"storagePid": "12"}} — the conversion to the stored XML happens for you. ' .
+                            'PARTIAL PATCH: omitted fields keep their stored values, so send only what changes. Each field must be declared by the record type\'s DataStructure and is placed in its own sheet automatically; ' .
+                            'call GetFlexFormSchema first, because unknown fields and fields declared in several sheets are rejected with the list of valid names. ' .
+                            'NEVER pass FlexForm XML: a string starting with <?xml is stored verbatim, which skips both the merge and the schema check and DELETES every FlexForm value the string omits — with no error, reported as success. ' .
+                            'ReadTable returns exactly the JSON shape to send back.',
                         'additionalProperties' => true,
                         'examples' => [
                             ['title' => 'News Title', 'bodytext' => 'News <b>content</b>', 'datetime' => '2024-01-01 10:00:00'],
@@ -105,6 +107,7 @@ class WriteTableTool extends AbstractRecordTool
                             ['header' => [['search' => 'Welcom', 'replace' => 'Welcome'], ['search' => 'Compnay', 'replace' => 'Company']]],
                             ['header' => 'With images', 'CType' => 'textmedia', 'assets' => [3, 4]],
                             ['image' => [['uid_local' => 5, 'title' => 'Photo', 'alternative' => 'Alt text']]],
+                            ['pi_flexform' => ['settings' => ['orderBy' => 'datetime', 'orderDirection' => 'desc']]],
                         ]
                     ],
                     'position' => [
