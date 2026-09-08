@@ -160,6 +160,99 @@ class WriteTableToolFlexFormTest extends FunctionalTestCase
     }
 
     /**
+     * Test that raw FlexForm XML is refused without the explicit opt-in. It
+     * replaces the whole stored structure, so every field it omits is erased —
+     * silently, and reported as success. Nothing a caller should reach by
+     * accident.
+     */
+    public function testRawFlexFormXmlIsRefusedWithoutOptIn(): void
+    {
+        $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
+
+        $result = $writeTool->execute([
+            'table' => 'tt_content',
+            'action' => 'create',
+            'pid' => 1,
+            'data' => [
+                'CType' => 'test_multisheetflex',
+                'header' => 'Raw XML element',
+                'pi_flexform' => '<?xml version="1.0" encoding="utf-8" standalone="yes" ?>'
+                    . '<T3FlexForms><data><sheet index="sDEF"><language index="lDEF">'
+                    . '<field index="settings.contacts"><value index="vDEF">x</value></field>'
+                    . '</language></sheet></data></T3FlexForms>',
+            ],
+        ]);
+
+        $this->assertTrue($result->isError, 'Raw FlexForm XML must be refused by default');
+        $message = $result->content[0]->text;
+        $this->assertStringContainsString('raw FlexForm XML string', $message);
+        $this->assertStringContainsString('replaceFlexFormXml', $message, 'The error must name the opt-in');
+    }
+
+    /**
+     * Test that the opt-in still allows the escape hatch — the documented way
+     * to repair a stored value that no longer parses.
+     */
+    public function testRawFlexFormXmlIsAcceptedWithOptIn(): void
+    {
+        $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
+
+        $result = $writeTool->execute([
+            'table' => 'tt_content',
+            'action' => 'create',
+            'pid' => 1,
+            'replaceFlexFormXml' => true,
+            'data' => [
+                'CType' => 'test_multisheetflex',
+                'header' => 'Raw XML element',
+                'pi_flexform' => '<?xml version="1.0" encoding="utf-8" standalone="yes" ?>'
+                    . '<T3FlexForms><data><sheet index="sDEF"><language index="lDEF">'
+                    . '<field index="settings.contacts"><value index="vDEF">from raw xml</value></field>'
+                    . '</language></sheet></data></T3FlexForms>',
+            ],
+        ]);
+
+        $this->assertFalse($result->isError, $result->content[0]->text);
+
+        $readTool = GeneralUtility::makeInstance(ReadTableTool::class);
+        $read = $readTool->execute(['table' => 'tt_content', 'where' => "header = 'Raw XML element'"]);
+        $this->assertFalse($read->isError, $read->content[0]->text);
+        $this->assertStringContainsString('from raw xml', $read->content[0]->text);
+    }
+
+    /**
+     * Test that the opt-in does not survive into the next call. The tool
+     * instance is shared between calls, so a `true` that leaked would silently
+     * re-open the destructive path for every later caller.
+     */
+    public function testOptInDoesNotLeakIntoTheNextCall(): void
+    {
+        $writeTool = GeneralUtility::makeInstance(WriteTableTool::class);
+        $xml = '<?xml version="1.0" encoding="utf-8" standalone="yes" ?>'
+            . '<T3FlexForms><data><sheet index="sDEF"><language index="lDEF">'
+            . '<field index="settings.contacts"><value index="vDEF">y</value></field>'
+            . '</language></sheet></data></T3FlexForms>';
+
+        $allowed = $writeTool->execute([
+            'table' => 'tt_content',
+            'action' => 'create',
+            'pid' => 1,
+            'replaceFlexFormXml' => true,
+            'data' => ['CType' => 'test_multisheetflex', 'header' => 'First', 'pi_flexform' => $xml],
+        ]);
+        $this->assertFalse($allowed->isError, $allowed->content[0]->text);
+
+        $refused = $writeTool->execute([
+            'table' => 'tt_content',
+            'action' => 'create',
+            'pid' => 1,
+            'data' => ['CType' => 'test_multisheetflex', 'header' => 'Second', 'pi_flexform' => $xml],
+        ]);
+        $this->assertTrue($refused->isError, 'The opt-in must not carry over to a call that did not ask for it');
+        $this->assertStringContainsString('replaceFlexFormXml', $refused->content[0]->text);
+    }
+
+    /**
      * Test the K26 scenario end to end: a non-`settings` subtree written as
      * JSON comes back as the same nested JSON on read (write→read round trip)
      */
