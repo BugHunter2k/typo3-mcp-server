@@ -29,6 +29,13 @@ class WriteTableTool extends AbstractRecordTool
 {
     protected LanguageService $languageService;
 
+    /**
+     * Whether the call currently being executed opted into replacing a whole
+     * FlexForm structure with a raw XML string. Set from the parameters at the
+     * top of every doExecute().
+     */
+    protected bool $allowRawFlexFormXml = false;
+
     public function __construct()
     {
         parent::__construct();
@@ -108,6 +115,14 @@ class WriteTableTool extends AbstractRecordTool
                             . 'To create elements in order, chain "after:UID" with the UID from the previous response.',
                         'default' => 'bottom',
                     ],
+                    'replaceFlexFormXml' => [
+                        'type' => 'boolean',
+                        'description' => 'Allow a raw FlexForm XML string (starting with "<?xml") as a FlexForm field value, '
+                            . 'replacing the whole stored structure instead of patching it. Off by default and almost never '
+                            . 'what you want: every field the XML omits is erased. Pass a nested JSON object instead — that is '
+                            . 'a partial patch. This exists only to repair a stored value that can no longer be parsed.',
+                        'default' => false,
+                    ],
                 ],
                 'required' => ['action', 'table'],
             ],
@@ -141,6 +156,15 @@ class WriteTableTool extends AbstractRecordTool
         // is only meaningful for create/move; on update we must not reorder unless the
         // caller asked for it (or is moving the record to another page via data.pid).
         $positionProvided = array_key_exists('position', $params);
+        // Raw FlexForm XML replaces the stored structure wholesale, so it is
+        // only accepted when this call says so (see convertDataForStorage).
+        // Assigned unconditionally on every call: the tool instance is shared
+        // across calls, and a `true` must never survive into the next one.
+        // Carried on the instance rather than threaded through the four
+        // convertDataForStorage() call sites, which would mean changing
+        // createRecord(), updateRecord() and buildInlineDataMap() — the same
+        // signatures upstream is editing.
+        $this->allowRawFlexFormXml = (bool)($params['replaceFlexFormXml'] ?? false);
 
         // The schema documents the target page as `pid` inside `data`. Older callers
         // (and LLMs trained on prior versions) pass a top-level `pid`; fold a stray one
@@ -1587,11 +1611,27 @@ class WriteTableTool extends AbstractRecordTool
 
             // Handle FlexForm fields
             if ($this->isFlexFormField($table, $fieldName)) {
-                // If the value is already a string (XML), keep it as is
+                // A raw XML string replaces the entire stored structure: it
+                // skips both the fetch-and-merge partial patch and the
+                // DataStructure check below, so every field the string omits is
+                // erased — silently, and reported as success. That is a
+                // legitimate last resort for a stored value that no longer
+                // parses (see convertFlexFormValueForStorage), and nothing a
+                // caller should reach by accident, so it takes an explicit
+                // opt-in.
                 if (is_string($value) && strpos($value, '<?xml') === 0) {
+                    if (!$this->allowRawFlexFormXml) {
+                        throw new ValidationException([
+                            "The value of $table.$fieldName is a raw FlexForm XML string. It would replace the "
+                            . 'whole stored structure and erase every field it omits. Pass a nested JSON object '
+                            . 'instead — that is applied as a partial patch, e.g. {"settings": {"orderBy": "datetime"}}. '
+                            . 'To replace the structure on purpose (e.g. to repair an unparseable value), set '
+                            . '"replaceFlexFormXml": true.',
+                        ]);
+                    }
                     continue;
                 }
-                
+
                 // If the value is an array or JSON string, convert it to XML
                 $flexFormArray = is_array($value) ? $value : (is_string($value) && strpos($value, '{') === 0 ? json_decode($value, true) : null);
 
@@ -1731,7 +1771,8 @@ class WriteTableTool extends AbstractRecordTool
             // explicit; raw XML passthrough can be used to overwrite it.
             throw new ValidationException([
                 "The stored FlexForm value of $table.$fieldName cannot be parsed ($parsed). "
-                . 'Pass a full FlexForm XML string (starting with <?xml) to replace it.',
+                . 'To replace it, pass a full FlexForm XML string (starting with <?xml) together with '
+                . '"replaceFlexFormXml": true.',
             ]);
         }
 

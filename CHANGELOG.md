@@ -74,6 +74,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.code` for its prominent block, and one class meaning two things across shared
   styles is how copies drift apart in the first place.
 
+### Changed
+
+- A raw FlexForm XML string now takes an explicit opt-in. Passing a string that
+  starts with `<?xml` as a FlexForm field value skips both the fetch-and-merge
+  partial patch and the DataStructure check, and hands the XML to DataHandler
+  verbatim — so every field the string omits is erased, silently, and the call
+  reports success. It is a legitimate last resort for a stored value that no
+  longer parses (`convertFlexFormValueForStorage` says so in its error), but
+  nothing a caller should reach by accident, and a model formulating an ordinary
+  FlexForm write as XML reaches it easily: two such writes are in the kaldewei
+  production logs. `WriteTable` now refuses it unless the call also passes
+  `"replaceFlexFormXml": true`, and the error names the nested-object form that
+  is a partial patch. The unparseable-value error names the flag as well.
+
+  The flag is carried on the tool instance rather than threaded through the four
+  `convertDataForStorage()` call sites, which would mean changing
+  `createRecord()`, `updateRecord()` and `buildInlineDataMap()` — the same
+  signatures upstream is editing. It is therefore assigned unconditionally at
+  the top of every `doExecute()`, and `testOptInDoesNotLeakIntoTheNextCall`
+  pins that a `true` cannot survive into a later call on the shared instance.
+
+  Side effect worth having: an OWASP CRS installation in front of a backend
+  flags FlexForm XML in the request body as an XSS attempt (rule 941100,
+  libinjection) and answers 403. With the accidental path closed, the rule is
+  only reachable on a deliberate repair.
+
 ### Fixed
 
 - FlexForm DataStructures resolve again on TYPO3 14. `FlexFormStructureService`
