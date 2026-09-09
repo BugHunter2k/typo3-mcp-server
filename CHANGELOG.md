@@ -54,6 +54,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`ReadTable.where` nimmt typisierte Klauseln statt einer SQL-Bedingung.**
+  Der rohe String war durch eine Keyword-Blockliste abgesichert, die
+  DROP/DELETE/UPDATE/INSERT/TRUNCATE/ALTER/CREATE nannte — aber **nicht SELECT**.
+  Damit ging `uid IN (SELECT uid FROM be_users WHERE admin = 1)` durch, und
+  `EXISTS (SELECT 1 FROM be_users WHERE password LIKE 'x%')` war ein blindes
+  Orakel auf eine Spalte, die das Tool nie ausliefert. Umgekehrt scheiterte jede
+  legitime Suche nach `header contains "update"` an der Substring-Prüfung.
+
+  Neu:
+
+  ```json
+  "where": [{"field": "CType", "operator": "=", "value": "textmedia"},
+            {"field": "uid", "operator": "in", "value": [100, 263]}]
+  ```
+
+  Feld, Operator und Wert werden getrennt geprüft, der Wert als Parameter
+  gebunden — nichts vom Aufrufer wird in SQL konkateniert. Das Feld wird gegen
+  `getAvailableFields()` geprüft und schließt damit ein **zweites** Loch: die
+  Bedingung hat die Feldfreigabe nie konsultiert, ein Filter konnte also nach
+  einer Spalte einschränken, die nie im Ergebnis steht. Klauseln sind
+  AND-verknüpft; OR fehlt absichtlich, weil Verschachtelung eine Filtersprache
+  in einen Interpreter verwandelt.
+
+  **Bruch:** ein String wird abgelehnt, mit einer Meldung, die die Form nennt
+  (ohne die Eingabe zurückzugeben). Für einen LLM-Aufrufer heilt das von selbst
+  — er liest das Schema pro Session neu. Fest verdrahtete Automationen mit
+  String brechen sofort. Schließt zugleich CRS 942100 auf der
+  kaldewei-Produktion: es steht nichts SQL-Artiges mehr im Request-Body.
+
+  Zwei Dinge fielen beim Bauen auf, beide durch Tests erzwungen:
+  `canAccessField()` ist eine Sperrliste, keine Erlaubnisliste — bei einem
+  unbekannten Feldnamen ist die TCA-Config leer und die Funktion gibt `true`
+  zurück. Und der alte Filter-Test prüfte nur eine Schleife über die Ergebnisse,
+  war auf einer leeren Menge also vakuum und hätte einen kaputten Filter nie
+  gemeldet.
+
 - **Breaking: the file tools go from seven to four.** `UploadFile`,
   `BrowseFolder`, `SearchFile` and `PreviewFile` remain. Upstream's upload
   implementation replaces ours, which brings hardening we did not have — SSRF
