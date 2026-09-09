@@ -14,6 +14,7 @@ use Mcp\Server\Transport\Http\FileSessionStore;
 use Mcp\Server\Transport\Http\HttpMessage;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use TYPO3\CMS\Core\Configuration\ExtensionConfiguration;
 use TYPO3\CMS\Core\Context\Context;
 use TYPO3\CMS\Core\Context\UserAspect;
 use TYPO3\CMS\Core\Context\WorkspaceAspect;
@@ -56,9 +57,37 @@ class McpEndpoint
      * asked for and nobody reads. Diagnostics are therefore limited to the
      * Development context, which is also where they are actually needed.
      */
+    private ?bool $debugLoggingConfigured = null;
+
+    /**
+     * Whether the per-request trace is written. Two triggers: the Development
+     * application context (upstream's rule), and the extension setting
+     * ``debugLogging``. The setting exists because the context is not a lever
+     * you can pull on a production installation — and a production
+     * installation is exactly where a connection problem needs diagnosing.
+     * Off by default either way: it is several lines per request and buries
+     * everything else in the PHP error log. Authentication failures are logged
+     * regardless.
+     */
     private function isDebugLoggingEnabled(): bool
     {
-        return Environment::getContext()->isDevelopment();
+        if (Environment::getContext()->isDevelopment()) {
+            return true;
+        }
+
+        if ($this->debugLoggingConfigured === null) {
+            try {
+                $configured = GeneralUtility::makeInstance(ExtensionConfiguration::class)
+                    ->get('mcp_server', 'debugLogging');
+            } catch (\Exception) {
+                // No extension configuration written yet (fresh install) — an
+                // expected state, and "not configured" means "not enabled".
+                $configured = false;
+            }
+            $this->debugLoggingConfigured = (bool)$configured;
+        }
+
+        return $this->debugLoggingConfigured;
     }
 
     /**
@@ -123,8 +152,13 @@ class McpEndpoint
             // Authenticate via Bearer token or query parameter
             $token = $this->extractToken($request);
 
+            // Authentication failures are logged unconditionally, not through
+            // logDebug(): they are the entries somebody goes looking for when a
+            // connection does not work, and requiring the trace to be switched
+            // on first means the one line that explains the 401 is missing
+            // exactly when it is needed. Neither line carries token material.
             if (!$token) {
-                $this->logDebug("MCP: No token found in Authorization header or query params");
+                error_log('MCP: No authentication token in Authorization header or query params');
                 return $this->createUnauthorizedResponse('Missing authentication token', $request);
             }
 
@@ -135,7 +169,7 @@ class McpEndpoint
             $tokenInfo = $oauthService->validateToken($token, $request);
 
             if (!$tokenInfo) {
-                $this->logDebug('MCP: Authentication token validation failed');
+                error_log('MCP: Authentication token validation failed');
                 return $this->createUnauthorizedResponse('Invalid or expired token', $request);
             }
 
