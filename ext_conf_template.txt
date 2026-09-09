@@ -9,3 +9,9 @@ additionalStandaloneTables = sys_file_metadata
 
 # cat=mcp/files; type=int+; label=Maximum file size (MiB): Upper limit for files fetched from URLs or received through pre-signed uploads via the UploadFile tool. Default: 500
 maxFileSizeMb = 500
+
+# cat=mcp/oauth; type=int+; label=Access token lifetime (seconds): Upper bound on how long an OAuth session survives. A token cannot outlive this even when it is never used again, so shortening it is the lever against sessions that stay valid long after anybody last touched them. Clients run through the authorization flow again afterwards. Default 2592000 (30 days); 28800 is 8 hours.
+tokenLifetime = 2592000
+
+# cat=mcp/oauth; type=int+; label=Authorization code lifetime (seconds): How long an issued authorization code can be exchanged for an access token. Covers only the seconds between consent and the client's token request, so it is short by design. Default 600 (10 minutes).
+authorizationCodeLifetime = 600
