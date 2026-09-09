@@ -26,6 +26,12 @@ services:
       - name: 'console.command'
         command: 'mcp:oauth'
         description: 'Manage OAuth tokens for MCP server'
+
+  Hn\McpServer\Command\DomainsCommand:
+    tags:
+      - name: 'console.command'
+        command: 'mcp:domains'
+        description: 'List all site domains (base + baseVariants) as JSON for the MCP gateway .mcp.json'
         
   # Make ToolRegistry public for eID access
   Hn\McpServer\MCP\ToolRegistry:
@@ -42,6 +48,10 @@ services:
   # Make OAuthService public for eID access
   Hn\McpServer\Service\OAuthService:
     public: true
+
+  # Make McpAuthenticationService public for endpoint access
+  Hn\McpServer\Service\McpAuthenticationService:
+    public: true
     
   # Make SiteInformationService public for eID access
   Hn\McpServer\Service\SiteInformationService:
@@ -50,7 +60,12 @@ services:
   # Make SiteInstructionsService public for server access
   Hn\McpServer\Server\SiteInstructionsService:
     public: true
-    
+
+  # Public for GeneralUtility::makeInstance() calls in OAuthManageCommand / PreviewFileTool
+  Hn\McpServer\Service\BaseUrlService:
+    public: true
+
+
   # Event listeners
   Hn\McpServer\EventListener\FileEnrichmentListener:
     tags:
