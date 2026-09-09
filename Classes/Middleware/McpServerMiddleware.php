@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Hn\McpServer\Middleware;
 
 use Hn\McpServer\Http\CorsHeadersTrait;
+use Hn\McpServer\Http\FilePreviewEndpoint;
 use Hn\McpServer\Http\FileUploadEndpoint;
 use Hn\McpServer\Http\RequestUrlTrait;
 use Hn\McpServer\Http\McpEndpoint;
@@ -19,8 +20,6 @@ use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use TYPO3\CMS\Core\Context\Context;
-use TYPO3\CMS\Core\Http\Response;
-use TYPO3\CMS\Core\Http\Stream;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 
 /**
@@ -51,12 +50,22 @@ class McpServerMiddleware implements MiddlewareInterface
             }
         }
 
+        // Normalize trailing slashes so /mcp/ routes like /mcp
+        $path = rtrim($path, '/');
+
         // Route to appropriate endpoint
         return match($path) {
             // Main MCP endpoint
             '/mcp' => GeneralUtility::makeInstance(McpEndpoint::class)($request),
 
-            // Pre-signed file upload target (UploadFile tool)
+            // File preview endpoint (serves thumbnails as direct image response)
+            '/mcp/preview' => GeneralUtility::makeInstance(FilePreviewEndpoint::class)($request),
+
+            // File upload endpoint. Two spellings on purpose: /mcp/upload is
+            // what our pre-signed URLs have always pointed at and what the
+            // gateway allowlists, /mcp_upload is where upstream puts it. A
+            // backend serves whichever its clients ask for.
+            '/mcp/upload' => GeneralUtility::makeInstance(FileUploadEndpoint::class)($request),
             '/mcp_upload' => GeneralUtility::makeInstance(FileUploadEndpoint::class)($request),
 
             // OAuth endpoints
@@ -71,60 +80,10 @@ class McpServerMiddleware implements MiddlewareInterface
             '/.well-known/oauth-protected-resource' => GeneralUtility::makeInstance(OAuthResourceMetadataEndpoint::class)($request),
             '/.well-known/oauth-protected-resource/mcp' => GeneralUtility::makeInstance(OAuthResourceMetadataEndpoint::class)($request),
 
-            // TYPO3 main page with OAuth continuation check
-            '/typo3/main' => $this->handleOAuthCookieContinuation($request, $handler),
             
             // All other routes
             default => $handler->handle($request),
         };
     }
     
-    /**
-     * Handle OAuth cookie continuation after login
-     */
-    private function handleOAuthCookieContinuation(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
-    {
-        $cookies = $request->getCookieParams();
-        
-        // Check if OAuth cookie exists
-        if (!isset($cookies['tx_mcpserver_oauth'])) {
-            return $handler->handle($request); // No OAuth cookie, handle normally
-        }
-        
-        $cookieValue = $cookies['tx_mcpserver_oauth'];
-        
-        // Decode and validate OAuth data
-        $oauthData = json_decode(base64_decode($cookieValue), true);
-        if (!is_array($oauthData)) {
-            return $handler->handle($request); // Invalid data, continue normal flow
-        }
-        
-        // Check if user is now authenticated using Context API
-        $backendUserAspect = $this->context->getAspect('backend.user');
-        if (!$backendUserAspect->isLoggedIn()) {
-            return $handler->handle($request); // User still not authenticated, continue normal flow
-        }
-        
-        // User is authenticated, redirect back to OAuth authorization endpoint
-        $queryParams = http_build_query([
-            'client_id' => $oauthData['client_id'] ?? '',
-            'client_name' => $oauthData['client_name'] ?? '',
-            'redirect_uri' => $oauthData['redirect_uri'] ?? '',
-            'code_challenge' => $oauthData['code_challenge'] ?? '',
-            'code_challenge_method' => $oauthData['code_challenge_method'] ?? '',
-            'state' => $oauthData['state'] ?? ''
-        ]);
-        
-        $oauthAuthorizeUrl = $this->getRequestSitePath($request) . '/mcp_oauth/authorize?' . $queryParams;
-        
-        $stream = new Stream('php://temp', 'rw');
-        $stream->write('');
-        $stream->rewind();
-        
-        return new Response(
-            $stream,
-            302,
-            ['Location' => $oauthAuthorizeUrl]
-        );
-    }
 }
