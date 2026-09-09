@@ -1283,8 +1283,25 @@ class TableAccessService implements SingletonInterface
                 // labels (e.g. sys_file_metadata.ranking on TYPO3 13 lists
                 // integer 1..5 as both value and label); translateLabel() and
                 // string concatenation downstream are type-strict.
-                $result['values'][] = (string)$itemValue;
-                $result['labels'][(string)$itemValue] = (string)$itemLabel;
+                $itemValue = (string)$itemValue;
+
+                // A value listed more than once is still one allowed value, so
+                // `values` carries it once. `labels` is keyed by value and has
+                // always collapsed repeats; `values` was a plain list and did
+                // not, and every caller pairs the two — so a value TCA offers
+                // twice was rendered as two identical options. Seen on a real
+                // installation where ext:form contributed its form list twice.
+                // Dividers are exempt: they are positional markers rather than
+                // values, and several of them are meaningful.
+                $isDivider = $itemValue === '--div--';
+                if (!$isDivider && array_key_exists($itemValue, $result['labels'])) {
+                    // Later label wins, unchanged from before.
+                    $result['labels'][$itemValue] = (string)$itemLabel;
+                    continue;
+                }
+
+                $result['values'][] = $itemValue;
+                $result['labels'][$itemValue] = (string)$itemLabel;
             }
         }
         
