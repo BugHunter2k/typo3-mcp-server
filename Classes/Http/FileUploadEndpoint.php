@@ -166,11 +166,42 @@ class FileUploadEndpoint
                 $first = reset($first);
             }
             if ($first instanceof \Psr\Http\Message\UploadedFileInterface) {
+                // A multipart upload can fail at the PHP level before any of
+                // this runs, and getStream() on a failed upload is allowed to
+                // throw — which would surface as an unexplained 500. The PHP
+                // error codes say exactly what went wrong, and two of them
+                // (both size limits) are a server setting the caller cannot
+                // guess from "upload failed".
+                $this->assertUploadSucceeded($first->getError());
                 $clientName = $first->getClientFilename();
                 return [$first->getStream(), $clientName !== null ? basename($clientName) : null];
             }
         }
         return [$request->getBody(), null];
+    }
+
+    /**
+     * Turn a PHP upload error code into a message the caller can act on.
+     *
+     * @throws \InvalidArgumentException for anything but UPLOAD_ERR_OK
+     */
+    protected function assertUploadSucceeded(int $errorCode): void
+    {
+        if ($errorCode === UPLOAD_ERR_OK) {
+            return;
+        }
+
+        throw new \InvalidArgumentException(match ($errorCode) {
+            UPLOAD_ERR_INI_SIZE => 'The file exceeds the server\'s upload_max_filesize. Use the pre-signed upload '
+                . 'URL (call UploadFile without arguments) instead of a multipart form, or have the setting raised.',
+            UPLOAD_ERR_FORM_SIZE => 'The file exceeds the MAX_FILE_SIZE the form declared.',
+            UPLOAD_ERR_PARTIAL => 'The file arrived only partially. Retry with a fresh upload URL.',
+            UPLOAD_ERR_NO_FILE => 'No file was uploaded.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Server misconfiguration: PHP has no temporary directory to write to.',
+            UPLOAD_ERR_CANT_WRITE => 'Server error: PHP could not write the upload to disk.',
+            UPLOAD_ERR_EXTENSION => 'A PHP extension stopped the upload.',
+            default => 'The upload failed with PHP error code ' . $errorCode . '.',
+        });
     }
 
     /**
