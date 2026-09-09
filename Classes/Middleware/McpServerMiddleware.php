@@ -50,6 +50,9 @@ class McpServerMiddleware implements MiddlewareInterface
             }
         }
 
+        // Normalize trailing slashes so /mcp/ routes like /mcp
+        $path = rtrim($path, '/');
+
         // Route to appropriate endpoint
         return match($path) {
             // Main MCP endpoint
@@ -58,6 +61,11 @@ class McpServerMiddleware implements MiddlewareInterface
             // File preview endpoint (serves thumbnails as direct image response)
             '/mcp/preview' => GeneralUtility::makeInstance(FilePreviewEndpoint::class)($request),
 
+            // File upload endpoint. Two spellings on purpose: /mcp/upload is
+            // what our pre-signed URLs have always pointed at and what the
+            // gateway allowlists, /mcp_upload is where upstream puts it. A
+            // backend serves whichever its clients ask for.
+            '/mcp/upload' => GeneralUtility::makeInstance(FileUploadEndpoint::class)($request),
             '/mcp_upload' => GeneralUtility::makeInstance(FileUploadEndpoint::class)($request),
 
             // OAuth endpoints
