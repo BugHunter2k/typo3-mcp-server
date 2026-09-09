@@ -5,14 +5,27 @@ declare(strict_types=1);
 namespace Hn\McpServer\Tests\Functional\Http;
 
 use Hn\McpServer\Http\FileUploadEndpoint;
-use Psr\Http\Message\UploadedFileInterface;
+use Hn\McpServer\MCP\Tool\File\UploadFileTool;
+use Hn\McpServer\Service\FileUploadService;
+use TYPO3\CMS\Core\Core\Environment;
 use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Http\ServerRequest;
+use TYPO3\CMS\Core\Http\Stream;
 use TYPO3\CMS\Core\Http\UploadedFile;
-use TYPO3\CMS\Core\Localization\LanguageServiceFactory;
+use TYPO3\CMS\Core\Http\Uri;
+use TYPO3\CMS\Core\Resource\ResourceFactory;
+use TYPO3\CMS\Core\Resource\StorageRepository;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
 
+/**
+ * Tests for the pre-signed upload endpoint (/mcp_upload).
+ *
+ * Flow under test: the UploadFile MCP tool (or FileUploadService directly)
+ * mints a single-use token; the client PUTs raw file bytes to the endpoint;
+ * the endpoint stores the file as the token's backend user and returns the
+ * created sys_file as JSON.
+ */
 class FileUploadEndpointTest extends FunctionalTestCase
 {
     protected array $coreExtensionsToLoad = [
@@ -27,284 +40,261 @@ class FileUploadEndpointTest extends FunctionalTestCase
     protected function setUp(): void
     {
         parent::setUp();
-
         $this->importCSVDataSet(__DIR__ . '/../Fixtures/be_users.csv');
         $this->importCSVDataSet(__DIR__ . '/../Fixtures/pages.csv');
-        $this->importCSVDataSet(__DIR__ . '/../Fixtures/sys_file_storage.csv');
 
-        $GLOBALS['LANG'] = GeneralUtility::makeInstance(LanguageServiceFactory::class)->create('default');
+        GeneralUtility::mkdir_deep(Environment::getPublicPath() . '/fileadmin');
+        GeneralUtility::makeInstance(StorageRepository::class)
+            ->createLocalStorage('fileadmin', 'fileadmin/', 'relative', '', true);
 
-        $backendUser = $this->setUpBackendUser(1);
-        $GLOBALS['BE_USER'] = $backendUser;
+        // A site with a fully qualified base URL: without one (and without an
+        // HTTP request context) pre-signed upload URLs cannot be built.
+        $siteDir = $this->instancePath . '/typo3conf/sites/test-site';
+        GeneralUtility::mkdir_deep($siteDir);
+        GeneralUtility::writeFile($siteDir . '/config.yaml', "rootPageId: 1\nbase: 'https://example.com/'\n", true);
 
-        // Create storage base path
-        @mkdir($this->instancePath . '/fileadmin', 0777, true);
+        $this->setUpBackendUser(1);
     }
 
     /**
-     * Create a valid token in the database and return the plaintext token
+     * Create an upload token for the admin user, targeting /user_upload/.
      */
-    private function createValidToken(string $folder = '1:/', string $filename = 'test.jpg', int $maxSize = 52428800): string
+    protected function createToken(string $fileName = ''): string
     {
-        $token = bin2hex(random_bytes(32));
-        $tokenHash = hash('sha256', $token);
-
-        $connection = GeneralUtility::makeInstance(ConnectionPool::class)
-            ->getConnectionForTable('tx_mcpserver_upload_tokens');
-
-        $now = time();
-        $connection->insert('tx_mcpserver_upload_tokens', [
-            'pid' => 0,
-            'tstamp' => $now,
-            'crdate' => $now,
-            'token_hash' => $tokenHash,
-            'folder' => $folder,
-            'filename' => $filename,
-            'max_size' => $maxSize,
-            'be_user_uid' => 1,
-            'expires_at' => $now + 300, // 5 minutes
-            'used' => 0,
-        ]);
-
-        return $token;
+        $service = GeneralUtility::makeInstance(FileUploadService::class);
+        $folder = $service->resolveTargetFolder('/user_upload/');
+        return $service->createUploadToken($folder, $fileName)['token'];
     }
 
-    /**
-     * Create a mock uploaded file
-     */
-    private function createUploadedFile(string $content, string $filename = 'test.jpg'): UploadedFileInterface
+    protected function dispatchUpload(string $token, string $body, array $extraQuery = [], string $method = 'PUT', array $headers = []): \Psr\Http\Message\ResponseInterface
     {
-        $tempFile = GeneralUtility::tempnam('test_upload_');
-        file_put_contents($tempFile, $content);
+        $stream = new Stream('php://temp', 'rw');
+        $stream->write($body);
+        $stream->rewind();
 
-        return new UploadedFile(
-            $tempFile,
-            strlen($content),
-            UPLOAD_ERR_OK,
-            $filename,
-            'image/jpeg'
+        $request = (new ServerRequest(
+            new Uri('https://example.com/mcp_upload'),
+            $method,
+            $stream,
+            $headers
+        ))->withQueryParams(array_merge(['token' => $token], $extraQuery));
+
+        return (new FileUploadEndpoint())($request);
+    }
+
+    protected function pngBytes(): string
+    {
+        return base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==');
+    }
+
+    public function testUploadStoresFileAndReturnsJson(): void
+    {
+        $token = $this->createToken();
+        $response = $this->dispatchUpload($token, $this->pngBytes(), ['fileName' => 'uploaded.png']);
+
+        $this->assertEquals(201, $response->getStatusCode(), (string)$response->getBody());
+        $data = json_decode((string)$response->getBody(), true);
+
+        $this->assertEquals('uploaded.png', $data['fileName']);
+        $this->assertEquals('1:/user_upload/uploaded.png', $data['identifier']);
+        $this->assertGreaterThan(0, $data['uid']);
+
+        $file = GeneralUtility::makeInstance(ResourceFactory::class)->getFileObject($data['uid']);
+        $this->assertEquals($this->pngBytes(), $file->getContents());
+    }
+
+    public function testTokenIsSingleUse(): void
+    {
+        $token = $this->createToken();
+
+        $first = $this->dispatchUpload($token, $this->pngBytes(), ['fileName' => 'once.png']);
+        $this->assertEquals(201, $first->getStatusCode());
+
+        $second = $this->dispatchUpload($token, $this->pngBytes(), ['fileName' => 'twice.png']);
+        $this->assertEquals(401, $second->getStatusCode(), 'A used token must be rejected');
+    }
+
+    public function testInvalidTokenIsRejected(): void
+    {
+        $response = $this->dispatchUpload('not-a-real-token', $this->pngBytes(), ['fileName' => 'x.png']);
+        $this->assertEquals(401, $response->getStatusCode());
+    }
+
+    public function testFileNameFromTokenIsUsed(): void
+    {
+        $token = $this->createToken('preset-name.png');
+        $response = $this->dispatchUpload($token, $this->pngBytes());
+
+        $this->assertEquals(201, $response->getStatusCode(), (string)$response->getBody());
+        $data = json_decode((string)$response->getBody(), true);
+        $this->assertEquals('preset-name.png', $data['fileName']);
+    }
+
+    public function testFileNameFromContentDispositionHeader(): void
+    {
+        $token = $this->createToken();
+        $response = $this->dispatchUpload(
+            $token,
+            $this->pngBytes(),
+            [],
+            'PUT',
+            ['Content-Disposition' => 'attachment; filename="from-header.png"']
         );
+
+        $this->assertEquals(201, $response->getStatusCode(), (string)$response->getBody());
+        $data = json_decode((string)$response->getBody(), true);
+        $this->assertEquals('from-header.png', $data['fileName']);
+    }
+
+    public function testMissingFileNameIsRejected(): void
+    {
+        $token = $this->createToken();
+        $response = $this->dispatchUpload($token, $this->pngBytes());
+        $this->assertEquals(400, $response->getStatusCode());
+        $this->assertStringContainsString('file name', json_decode((string)$response->getBody(), true)['error']);
+    }
+
+    public function testEmptyBodyIsRejected(): void
+    {
+        $token = $this->createToken();
+        $response = $this->dispatchUpload($token, '', ['fileName' => 'empty.png']);
+        $this->assertEquals(400, $response->getStatusCode());
+    }
+
+    public function testTokenFileNameBeatsQueryParameter(): void
+    {
+        // The token authorizes exactly the file it was minted for; the request
+        // must not be able to widen it to another name/type.
+        $token = $this->createToken('bound-name.png');
+        $response = $this->dispatchUpload($token, $this->pngBytes(), ['fileName' => 'sneaky-other.png']);
+
+        $this->assertEquals(201, $response->getStatusCode(), (string)$response->getBody());
+        $data = json_decode((string)$response->getBody(), true);
+        $this->assertEquals('bound-name.png', $data['fileName']);
+    }
+
+    public function testExpiredTokenIsRejected(): void
+    {
+        $token = $this->createToken();
+        GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getConnectionForTable('tx_mcpserver_upload_tokens')
+            ->update('tx_mcpserver_upload_tokens', ['expires' => time() - 10], []);
+
+        $response = $this->dispatchUpload($token, $this->pngBytes(), ['fileName' => 'late.png']);
+        $this->assertEquals(401, $response->getStatusCode());
+    }
+
+    public function testMultipartUploadIsAccepted(): void
+    {
+        $token = $this->createToken();
+
+        $stream = new Stream('php://temp', 'rw');
+        $stream->write($this->pngBytes());
+        $stream->rewind();
+        $uploadedFile = new UploadedFile($stream, strlen($this->pngBytes()), UPLOAD_ERR_OK, 'from-form.png');
+
+        $request = (new ServerRequest(new Uri('https://example.com/mcp_upload'), 'POST'))
+            ->withQueryParams(['token' => $token])
+            ->withUploadedFiles(['file' => $uploadedFile]);
+
+        $response = (new FileUploadEndpoint())($request);
+        $this->assertEquals(201, $response->getStatusCode(), (string)$response->getBody());
+        $data = json_decode((string)$response->getBody(), true);
+        $this->assertEquals('from-form.png', $data['fileName'], 'The multipart client file name should be used');
+    }
+
+    public function testFailedUploadConsumesTheToken(): void
+    {
+        // The token is consumed on the attempt, not on success: a leaked token
+        // must be a single attempt, not a 15-minute upload permit with retries.
+        $token = $this->createToken();
+
+        $failed = $this->dispatchUpload($token, '', ['fileName' => 'empty.png']);
+        $this->assertEquals(400, $failed->getStatusCode());
+
+        $retry = $this->dispatchUpload($token, $this->pngBytes(), ['fileName' => 'retry.png']);
+        $this->assertEquals(401, $retry->getStatusCode(), 'A token must not survive a failed upload attempt');
     }
 
     /**
-     * Create a request with Bearer token and uploaded file
+     * Same hazard as #107 on the /mcp endpoint: the upload endpoint impersonates
+     * a backend user without the regular authentication flow, so it has to
+     * restore the stored uc itself. Otherwise a writeUC() during the upload
+     * overwrites the user's backend preferences with a nearly empty array.
      */
-    private function createUploadRequest(string $token, ?UploadedFileInterface $file = null): ServerRequest
+    public function testStoredUserConfigurationSurvivesAnUpload(): void
     {
-        $request = new ServerRequest('https://example.com/mcp/upload', 'POST');
-        $request = $request->withHeader('Authorization', 'Bearer ' . $token);
+        $storedUc = ['titleLen' => 77, 'lang' => 'de', 'emailMeAtLogin' => 1];
+        $connection = GeneralUtility::makeInstance(ConnectionPool::class)->getConnectionForTable('be_users');
+        $connection->update('be_users', ['uc' => serialize($storedUc)], ['uid' => 1]);
 
-        if ($file !== null) {
-            $request = $request->withUploadedFiles(['file' => $file]);
-        }
+        $token = $this->createToken('with-uc.png');
+        $response = $this->dispatchUpload($token, $this->pngBytes());
+        $this->assertEquals(201, $response->getStatusCode(), (string)$response->getBody());
 
-        return $request;
+        $this->assertEquals(77, $GLOBALS['BE_USER']->uc['titleLen'] ?? null, 'The impersonated user must carry the stored uc');
+
+        // Persisting now must not wipe what was stored
+        $GLOBALS['BE_USER']->writeUC();
+        $persisted = unserialize((string)$connection->select(['uc'], 'be_users', ['uid' => 1])->fetchOne(), ['allowed_classes' => false]);
+        $this->assertEquals(77, $persisted['titleLen'] ?? null, 'writeUC() must not destroy the stored backend preferences');
+        $this->assertEquals('de', $persisted['lang'] ?? null);
     }
 
-    public function testValidUploadSucceeds(): void
+    public function testDisabledBackendUserCannotUpload(): void
     {
-        $token = $this->createValidToken('1:/', 'test-upload.txt');
-        $file = $this->createUploadedFile('Hello World', 'test-upload.txt');
-        $request = $this->createUploadRequest($token, $file);
+        GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getConnectionForTable('be_users')
+            ->update('be_users', ['disable' => 1], ['uid' => 1]);
 
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
+        $token = $this->createToken('blocked.png');
+        $response = $this->dispatchUpload($token, $this->pngBytes());
 
-        $this->assertSame(200, $response->getStatusCode());
-
-        $body = json_decode($response->getBody()->getContents(), true);
-        $this->assertTrue($body['success']);
-        $this->assertArrayHasKey('file', $body);
-        $this->assertSame('test-upload.txt', $body['file']['name']);
-        $this->assertArrayHasKey('uid', $body['file']);
-        $this->assertArrayHasKey('url', $body['file']);
-
-        // Verify file exists on disk
-        $this->assertFileExists($this->instancePath . '/fileadmin/test-upload.txt');
+        $this->assertEquals(400, $response->getStatusCode(), (string)$response->getBody());
+        $this->assertStringContainsString('not available', json_decode((string)$response->getBody(), true)['error']);
     }
 
-    public function testExpiredTokenReturns401(): void
+    public function testExecutableFileIsRejectedAtTheEndpointToo(): void
     {
-        // Create an expired token
-        $token = bin2hex(random_bytes(32));
-        $tokenHash = hash('sha256', $token);
+        // The pre-signed endpoint is a second door into the same storage; the
+        // executable-file guard must apply there as well.
+        $token = $this->createToken();
+        $response = $this->dispatchUpload($token, '<?php echo 1;', ['fileName' => 'evil.php']);
 
-        $connection = GeneralUtility::makeInstance(ConnectionPool::class)
-            ->getConnectionForTable('tx_mcpserver_upload_tokens');
+        $this->assertEquals(400, $response->getStatusCode(), (string)$response->getBody());
+        $this->assertStringContainsString('not allowed', json_decode((string)$response->getBody(), true)['error']);
+        $this->assertFileDoesNotExist(Environment::getPublicPath() . '/fileadmin/user_upload/evil.php');
+    }
 
-        $pastTime = time() - 3600; // 1 hour ago
-        $connection->insert('tx_mcpserver_upload_tokens', [
-            'pid' => 0,
-            'tstamp' => $pastTime,
-            'crdate' => $pastTime,
-            'token_hash' => $tokenHash,
-            'folder' => '1:/',
-            'filename' => 'test.jpg',
-            'max_size' => 52428800,
-            'be_user_uid' => 1,
-            'expires_at' => $pastTime, // Already expired
-            'used' => 0,
+    public function testGetMethodIsRejected(): void
+    {
+        $response = $this->dispatchUpload($this->createToken(), '', [], 'GET');
+        $this->assertEquals(405, $response->getStatusCode());
+    }
+
+    /**
+     * Full round trip: the UploadFile tool mints the URL, the endpoint consumes it.
+     */
+    public function testEndToEndFlowFromTool(): void
+    {
+        $result = GeneralUtility::makeInstance(UploadFileTool::class)->execute([
+            'targetFolder' => '/user_upload/',
+            'fileName' => 'roundtrip.png',
         ]);
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+        $toolData = json_decode($result->content[0]->text, true);
 
-        $file = $this->createUploadedFile('test content');
-        $request = $this->createUploadRequest($token, $file);
+        $this->assertNotEmpty($toolData['uploadToken']);
+        $this->assertStringNotContainsString('token=', $toolData['uploadUrl'], 'The token must not appear in the URL');
 
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
-
-        $this->assertSame(401, $response->getStatusCode());
-        $body = json_decode($response->getBody()->getContents(), true);
-        $this->assertStringContainsString('expired', strtolower($body['error']));
-    }
-
-    public function testAlreadyUsedTokenReturns401(): void
-    {
-        // Create a used token
-        $token = bin2hex(random_bytes(32));
-        $tokenHash = hash('sha256', $token);
-
-        $connection = GeneralUtility::makeInstance(ConnectionPool::class)
-            ->getConnectionForTable('tx_mcpserver_upload_tokens');
-
-        $now = time();
-        $connection->insert('tx_mcpserver_upload_tokens', [
-            'pid' => 0,
-            'tstamp' => $now,
-            'crdate' => $now,
-            'token_hash' => $tokenHash,
-            'folder' => '1:/',
-            'filename' => 'test.jpg',
-            'max_size' => 52428800,
-            'be_user_uid' => 1,
-            'expires_at' => $now + 300,
-            'used' => 1, // Already used!
+        // Token travels as Authorization header, like the tool instructions say
+        $response = $this->dispatchUpload('', $this->pngBytes(), [], 'PUT', [
+            'Authorization' => 'Bearer ' . $toolData['uploadToken'],
         ]);
+        $this->assertEquals(201, $response->getStatusCode(), (string)$response->getBody());
 
-        $file = $this->createUploadedFile('test content');
-        $request = $this->createUploadRequest($token, $file);
-
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
-
-        $this->assertSame(401, $response->getStatusCode());
-    }
-
-    public function testInvalidTokenReturns401(): void
-    {
-        $file = $this->createUploadedFile('test content');
-        $request = $this->createUploadRequest('invalid_token_12345', $file);
-
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
-
-        $this->assertSame(401, $response->getStatusCode());
-    }
-
-    public function testMissingAuthorizationHeaderReturns401(): void
-    {
-        $request = new ServerRequest('https://example.com/mcp/upload', 'POST');
-        $file = $this->createUploadedFile('test content');
-        $request = $request->withUploadedFiles(['file' => $file]);
-
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
-
-        $this->assertSame(401, $response->getStatusCode());
-        $body = json_decode($response->getBody()->getContents(), true);
-        $this->assertStringContainsString('Authorization', $body['error']);
-    }
-
-    public function testFileTooLargeReturns413(): void
-    {
-        // Create token with small max_size
-        $token = $this->createValidToken('1:/', 'test.txt', 10); // Only 10 bytes allowed
-
-        // Create file larger than allowed
-        $file = $this->createUploadedFile('This content is definitely more than 10 bytes');
-        $request = $this->createUploadRequest($token, $file);
-
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
-
-        $this->assertSame(413, $response->getStatusCode());
-        $body = json_decode($response->getBody()->getContents(), true);
-        $this->assertStringContainsString('too large', strtolower($body['error']));
-    }
-
-    public function testFileAlreadyExistsReturns409(): void
-    {
-        // Pre-create a file
-        file_put_contents($this->instancePath . '/fileadmin/existing.txt', 'original content');
-
-        $token = $this->createValidToken('1:/', 'existing.txt');
-        $file = $this->createUploadedFile('new content', 'existing.txt');
-        $request = $this->createUploadRequest($token, $file);
-
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
-
-        $this->assertSame(409, $response->getStatusCode());
-        $body = json_decode($response->getBody()->getContents(), true);
-        $this->assertStringContainsString('already exists', strtolower($body['error']));
-
-        // Original file should be unchanged
-        $this->assertSame('original content', file_get_contents($this->instancePath . '/fileadmin/existing.txt'));
-    }
-
-    public function testMissingFileFieldReturns400(): void
-    {
-        $token = $this->createValidToken();
-        $request = $this->createUploadRequest($token, null); // No file
-
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
-
-        $this->assertSame(400, $response->getStatusCode());
-        $body = json_decode($response->getBody()->getContents(), true);
-        $this->assertStringContainsString('file', strtolower($body['error']));
-    }
-
-    public function testTokenCanOnlyBeUsedOnce(): void
-    {
-        $token = $this->createValidToken('1:/', 'test1.txt');
-
-        // First upload should succeed
-        $file1 = $this->createUploadedFile('content 1', 'test1.txt');
-        $request1 = $this->createUploadRequest($token, $file1);
-
-        $endpoint = new FileUploadEndpoint();
-        $response1 = $endpoint($request1);
-        $this->assertSame(200, $response1->getStatusCode());
-
-        // Second upload with same token should fail
-        // Need a new token for a different filename since the first one is used
-        $file2 = $this->createUploadedFile('content 2', 'test2.txt');
-        $request2 = $this->createUploadRequest($token, $file2);
-
-        $response2 = $endpoint($request2);
-        $this->assertSame(401, $response2->getStatusCode());
-    }
-
-    public function testOptionsRequestReturnsCorHeaders(): void
-    {
-        $request = (new ServerRequest('https://example.com/mcp/upload', 'OPTIONS'))
-            ->withHeader('Origin', 'https://client.example.com');
-
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
-
-        $this->assertSame(200, $response->getStatusCode());
-        $this->assertTrue($response->hasHeader('Access-Control-Allow-Origin'));
-        $this->assertTrue($response->hasHeader('Access-Control-Allow-Methods'));
-    }
-
-    public function testGetMethodReturns405(): void
-    {
-        $request = new ServerRequest('https://example.com/mcp/upload', 'GET');
-
-        $endpoint = new FileUploadEndpoint();
-        $response = $endpoint($request);
-
-        $this->assertSame(405, $response->getStatusCode());
+        $data = json_decode((string)$response->getBody(), true);
+        $this->assertEquals('roundtrip.png', $data['fileName'], 'File name preset in the tool call must be used');
+        $this->assertEquals('1:/user_upload/roundtrip.png', $data['identifier']);
     }
 }
