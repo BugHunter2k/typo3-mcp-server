@@ -7,6 +7,11 @@ namespace Hn\McpServer\Http;
 use Hn\McpServer\Service\BackendUserContextService;
 use Hn\McpServer\Service\FileUploadService;
 use Hn\McpServer\Service\SiteInformationService;
+use TYPO3\CMS\Core\Context\Context;
+use TYPO3\CMS\Core\Context\FileProcessingAspect;
+use TYPO3\CMS\Core\Core\SystemEnvironmentBuilder;
+use TYPO3\CMS\Core\Resource\Index\Indexer;
+use TYPO3\CMS\Core\Resource\ProcessedFile;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\StreamInterface;
@@ -43,7 +48,18 @@ class FileUploadEndpoint
             // Preferred: Authorization header (query strings end up in server
             // logs); the ?token= query parameter is kept as fallback.
             $token = '';
-            if (preg_match('/^Bearer\s+(\S+)$/i', $request->getHeaderLine('Authorization'), $matches)) {
+            // Apache frequently strips Authorization before it reaches PHP —
+            // mod_php and especially FastCGI/mod_fcgid. The .htaccess shipped
+            // with this extension restores it as an environment variable, so
+            // the server params are checked when the PSR-7 header is empty.
+            $authHeader = $request->getHeaderLine('Authorization');
+            if ($authHeader === '') {
+                $serverParams = $request->getServerParams();
+                $authHeader = (string)($serverParams['HTTP_AUTHORIZATION']
+                    ?? $serverParams['REDIRECT_HTTP_AUTHORIZATION']
+                    ?? '');
+            }
+            if (preg_match('/^Bearer\s+(\S+)$/i', $authHeader, $matches)) {
                 $token = $matches[1];
             }
             $token = $token !== '' ? $token : (string)($request->getQueryParams()['token'] ?? '');
@@ -54,6 +70,19 @@ class FileUploadEndpoint
 
             $this->setupBackendUserContext((int)$tokenRow['be_user_uid']);
             GeneralUtility::makeInstance(SiteInformationService::class)->setCurrentRequest($request);
+
+            // FAL operations expect a backend request: the application type
+            // decides which TCA/driver configuration applies, and core
+            // services reach for the global request rather than a passed one.
+            $request = $request->withAttribute('applicationType', SystemEnvironmentBuilder::REQUESTTYPE_BE);
+            $GLOBALS['TYPO3_REQUEST'] = $request;
+
+            // Disable deferred image processing. DeferredBackendImageProcessor
+            // requires a full backend session with CSRF tokens, which this
+            // endpoint does not have — it authenticates with a single-use
+            // upload token. Without this, generating the preview below fails.
+            GeneralUtility::makeInstance(Context::class)
+                ->setAspect('fileProcessing', new FileProcessingAspect(false));
 
             [$body, $uploadedFileName] = $this->extractUpload($request);
 
@@ -83,6 +112,21 @@ class FileUploadEndpoint
                 if (file_exists($tempPath)) {
                     @unlink($tempPath);
                 }
+            }
+
+            // Extract width/height into sys_file_metadata and warm the image
+            // preview. Both are enrichment, not part of storing the file, so a
+            // failing extractor must not turn a successful upload into an
+            // error — without them the backend shows a file with no dimensions.
+            try {
+                $indexer = GeneralUtility::makeInstance(Indexer::class, $stored['file']->getStorage());
+                $indexer->extractMetaData($stored['file']);
+
+                if (str_starts_with((string)$stored['file']->getMimeType(), 'image/')) {
+                    $stored['file']->process(ProcessedFile::CONTEXT_IMAGEPREVIEW, []);
+                }
+            } catch (\Exception) {
+                // Enrichment only.
             }
 
             $data = $uploadService->describeFile($stored['file']);
@@ -122,11 +166,42 @@ class FileUploadEndpoint
                 $first = reset($first);
             }
             if ($first instanceof \Psr\Http\Message\UploadedFileInterface) {
+                // A multipart upload can fail at the PHP level before any of
+                // this runs, and getStream() on a failed upload is allowed to
+                // throw — which would surface as an unexplained 500. The PHP
+                // error codes say exactly what went wrong, and two of them
+                // (both size limits) are a server setting the caller cannot
+                // guess from "upload failed".
+                $this->assertUploadSucceeded($first->getError());
                 $clientName = $first->getClientFilename();
                 return [$first->getStream(), $clientName !== null ? basename($clientName) : null];
             }
         }
         return [$request->getBody(), null];
+    }
+
+    /**
+     * Turn a PHP upload error code into a message the caller can act on.
+     *
+     * @throws \InvalidArgumentException for anything but UPLOAD_ERR_OK
+     */
+    protected function assertUploadSucceeded(int $errorCode): void
+    {
+        if ($errorCode === UPLOAD_ERR_OK) {
+            return;
+        }
+
+        throw new \InvalidArgumentException(match ($errorCode) {
+            UPLOAD_ERR_INI_SIZE => 'The file exceeds the server\'s upload_max_filesize. Use the pre-signed upload '
+                . 'URL (call UploadFile without arguments) instead of a multipart form, or have the setting raised.',
+            UPLOAD_ERR_FORM_SIZE => 'The file exceeds the MAX_FILE_SIZE the form declared.',
+            UPLOAD_ERR_PARTIAL => 'The file arrived only partially. Retry with a fresh upload URL.',
+            UPLOAD_ERR_NO_FILE => 'No file was uploaded.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Server misconfiguration: PHP has no temporary directory to write to.',
+            UPLOAD_ERR_CANT_WRITE => 'Server error: PHP could not write the upload to disk.',
+            UPLOAD_ERR_EXTENSION => 'A PHP extension stopped the upload.',
+            default => 'The upload failed with PHP error code ' . $errorCode . '.',
+        });
     }
 
     /**
