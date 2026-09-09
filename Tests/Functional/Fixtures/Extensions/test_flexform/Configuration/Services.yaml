@@ -1,0 +1,14 @@
+services:
+  _defaults:
+    autowire: true
+    autoconfigure: true
+    public: false
+
+  # Registers the recording listener that stands in for ext:form's dynamic
+  # DataStructure. The class lives under Tests/ because fixture extensions are
+  # not autoloaded here; the Tests namespace is (composer autoload-dev).
+  Hn\McpServer\Tests\Functional\Fixtures\EventListener\RecordingDataStructureListener:
+    tags:
+      - name: event.listener
+        event: TYPO3\CMS\Core\Configuration\Event\AfterFlexFormDataStructureParsedEvent
+        identifier: 'test-flexform/record-and-append-items'

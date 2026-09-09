@@ -329,6 +329,64 @@ class GetTableSchemaToolTest extends FunctionalTestCase
     }
 
     /**
+     * A value TCA lists more than once is one allowed value, so it is offered
+     * once.
+     *
+     * Seen on a real installation: ext:form contributed its form definitions
+     * twice, so every form appeared twice in the FlexForm select — the TYPO3
+     * backend showed the same, the cause sits outside this extension and is
+     * unidentified. The asymmetry that turned it into duplicate output is ours
+     * though: `labels` is keyed by value and collapsed the repeat, `values`
+     * was a plain list and did not, and every caller pairs the two.
+     *
+     * Dividers stay untouched: they mark positions, not values.
+     */
+    public function testRepeatedItemValuesAreOfferedOnce(): void
+    {
+        $service = GeneralUtility::makeInstance(\Hn\McpServer\Service\TableAccessService::class);
+
+        $parsed = $service->parseSelectItems([
+            ['label' => 'Alpha', 'value' => 'alpha'],
+            ['label' => 'Beta', 'value' => 'beta'],
+            ['label' => 'Alpha', 'value' => 'alpha'],
+            ['label' => 'Beta', 'value' => 'beta'],
+        ]);
+
+        $this->assertSame(['alpha', 'beta'], $parsed['values']);
+        $this->assertSame(['alpha' => 'Alpha', 'beta' => 'Beta'], $parsed['labels']);
+
+        // The rendered schema is what a client reads, so assert there too.
+        $result = '';
+        \Hn\McpServer\Utility\TcaFormattingUtility::addFieldDetailsInline($result, [
+            'type' => 'select',
+            'renderType' => 'selectSingle',
+            'items' => [
+                ['label' => 'Alpha', 'value' => 'alpha'],
+                ['label' => 'Alpha', 'value' => 'alpha'],
+            ],
+        ]);
+        $this->assertSame(1, substr_count($result, 'alpha (Alpha)'), 'Rendered options must not repeat: ' . $result);
+    }
+
+    /**
+     * Several dividers in one select are positions, not values, and must all
+     * survive — the de-duplication above must not collapse them.
+     */
+    public function testDividersAreNotCollapsed(): void
+    {
+        $service = GeneralUtility::makeInstance(\Hn\McpServer\Service\TableAccessService::class);
+
+        $parsed = $service->parseSelectItems([
+            ['label' => 'Group A', 'value' => '--div--'],
+            ['label' => 'One', 'value' => 'one'],
+            ['label' => 'Group B', 'value' => '--div--'],
+            ['label' => 'Two', 'value' => 'two'],
+        ], false);
+
+        $this->assertSame(['--div--', 'one', '--div--', 'two'], $parsed['values']);
+    }
+
+    /**
      * Select TCA items with numeric (int) labels must not break schema
      * formatting. Reproduces a real-world third-party `ranking` field on
      * sys_file_metadata (TYPO3 13) that lists items with integer labels
