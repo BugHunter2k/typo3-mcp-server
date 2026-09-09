@@ -215,7 +215,7 @@ class WriteTableToolFlexFormTest extends FunctionalTestCase
         $this->assertFalse($result->isError, $result->content[0]->text);
 
         $readTool = GeneralUtility::makeInstance(ReadTableTool::class);
-        $read = $readTool->execute(['table' => 'tt_content', 'where' => "header = 'Raw XML element'"]);
+        $read = $readTool->execute(['table' => 'tt_content', 'where' => [['field' => 'header', 'operator' => '=', 'value' => 'Raw XML element']]]);
         $this->assertFalse($read->isError, $read->content[0]->text);
         $this->assertStringContainsString('from raw xml', $read->content[0]->text);
     }
