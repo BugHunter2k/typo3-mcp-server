@@ -50,7 +50,7 @@ class McpEndpointLogHygieneTest extends AbstractFunctionalTest
         );
 
         self::assertStringNotContainsString(self::SECRET, $log);
-        self::assertStringContainsString('<redacted>', $log, 'The header must still be listed');
+        self::assertStringContainsString('***redacted***', $log, 'The header must still be listed');
     }
 
     /**
@@ -65,7 +65,7 @@ class McpEndpointLogHygieneTest extends AbstractFunctionalTest
         );
 
         self::assertStringNotContainsString(self::SECRET, $log);
-        self::assertStringContainsString('<redacted>', $log);
+        self::assertStringContainsString('***redacted***', $log);
     }
 
     /**
@@ -80,7 +80,7 @@ class McpEndpointLogHygieneTest extends AbstractFunctionalTest
         );
 
         self::assertStringNotContainsString(substr(self::SECRET, 0, 20), $log);
-        self::assertStringContainsString('Bearer token present', $log);
+        self::assertStringContainsString('Received authentication token', $log);
     }
 
     /**
@@ -98,9 +98,9 @@ class McpEndpointLogHygieneTest extends AbstractFunctionalTest
         );
 
         self::assertStringNotContainsString('MCP: Request headers', $log);
-        self::assertStringNotContainsString('Bearer token present', $log);
+        self::assertStringNotContainsString('Received authentication token', $log);
         self::assertStringNotContainsString(self::SECRET, $log);
-        self::assertStringContainsString('Token validation failed', $log, 'Failures stay logged');
+        self::assertStringContainsString('Authentication token validation failed', $log, 'Failures stay logged');
     }
 
     public function testTheDiagnosticNamesTheMethodAndStatus(): void

@@ -61,9 +61,13 @@ class McpServerMiddleware implements MiddlewareInterface
             // File preview endpoint (serves thumbnails as direct image response)
             '/mcp/preview' => GeneralUtility::makeInstance(FilePreviewEndpoint::class)($request),
 
-            // File upload endpoint (receives files via pre-signed tokens)
+            // File upload endpoint. Two spellings on purpose: /mcp/upload is
+            // what our pre-signed URLs have always pointed at and what the
+            // gateway allowlists, /mcp_upload is where upstream puts it. A
+            // backend serves whichever its clients ask for.
             '/mcp/upload' => GeneralUtility::makeInstance(FileUploadEndpoint::class)($request),
-            
+            '/mcp_upload' => GeneralUtility::makeInstance(FileUploadEndpoint::class)($request),
+
             // OAuth endpoints
             '/mcp_oauth/authorize' => GeneralUtility::makeInstance(OAuthAuthorizeEndpoint::class)($request),
             '/mcp_oauth/token' => GeneralUtility::makeInstance(OAuthTokenEndpoint::class)($request),

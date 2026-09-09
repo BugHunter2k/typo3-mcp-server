@@ -115,6 +115,17 @@ $writeTool->execute([
 // Context fields (tablenames, fieldname, table_local) are set server-side
 ```
 
+### 2. File References (sys_file_reference)
+- `sys_file_reference` is fully supported as an embedded inline relation (`hideTable=true`)
+- It supports workspaces natively (`versioningWS=true` in TCA)
+- TCA `type=file` fields are expanded by `TcaPreparation` into inline relations with `foreign_table=sys_file_reference`
+- `foreign_match_fields` (`tablenames`, `fieldname`) ensure references are scoped to the correct parent field
+- File references are enriched with metadata from `sys_file` (filename, identifier, mime type, public URL)
+- `sys_file` itself is read-only - files are managed through the filesystem, not direct DB edits
+- New files are created with `UploadFile` (Base64), `ImportFileFromUrl` (server-side download) or
+  `GetUploadCredentials` (pre-signed HTTP upload); the resulting `sys_file` uid is then referenced
+  via `uid_local`
+
 ## Implementation
 
 ### Single DataHandler Call (Unified dataMap)
@@ -228,3 +239,5 @@ Inline relations are defined in TCA with type 'inline':
 2. **Position Management**: Full support for positioning inline records (before/after specific records)
 3. **Recursion Limits**: Configurable depth limit for nested inline relations
 4. **Field Allowlisting**: Restrict which fields can be set on inline children
+5. **Validation Enhancement**: More comprehensive validation for embedded record data
+6. **Performance Optimization**: Batch foreign field updates instead of individual UPDATE queries
