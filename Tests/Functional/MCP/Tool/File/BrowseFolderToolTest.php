@@ -179,4 +179,38 @@ class BrowseFolderToolTest extends FunctionalTestCase
         $this->assertStringContainsString('documents', $content);
         $this->assertStringContainsString('readme.txt', $content);
     }
+
+    /**
+     * Test that omitting "folder" lists the storages instead — the merged-in
+     * former ListStorages behaviour, so a caller who does not know what exists
+     * has one tool to start with rather than two.
+     */
+    public function testWithoutFolderTheStoragesAreListed(): void
+    {
+        $tool = GeneralUtility::makeInstance(BrowseFolderTool::class);
+
+        $result = $tool->execute([]);
+
+        $this->assertFalse($result->isError, $result->content[0]->text);
+        $text = $result->content[0]->text;
+        $this->assertStringContainsString('FILE STORAGES', $text);
+        $this->assertStringContainsString('Storage 1:', $text);
+        $this->assertStringContainsString('Root: 1:/', $text);
+        $this->assertStringContainsString('storage(s)', $text);
+    }
+
+    /**
+     * Test that an empty string is treated like an omitted folder rather than
+     * resolving to the default storage root — a caller passing "" means "I do
+     * not know", not "the root".
+     */
+    public function testAnEmptyFolderAlsoListsTheStorages(): void
+    {
+        $tool = GeneralUtility::makeInstance(BrowseFolderTool::class);
+
+        $result = $tool->execute(['folder' => '']);
+
+        $this->assertFalse($result->isError, $result->content[0]->text);
+        $this->assertStringContainsString('FILE STORAGES', $result->content[0]->text);
+    }
 }

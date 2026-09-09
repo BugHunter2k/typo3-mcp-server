@@ -23,22 +23,28 @@ class BrowseFolderTool extends AbstractRecordTool
     public function getSchema(): array
     {
         return [
-            'description' => 'Browse folder contents in a TYPO3 file storage. Lists subfolders and files with metadata (size, type, modification date). ' .
-                'Use combined identifier format like "1:/user_upload/" where 1 is the storage UID. ' .
-                'Note: File listing is limited to 100 files per folder. Use SearchFile for larger folders or filtered results.',
+            'description' => 'Browse the TYPO3 file storages. Without "folder" it lists the available storages with their '
+                . 'capabilities and root paths — start here when you do not know what exists. With "folder" it lists that '
+                . 'folder\'s subfolders and files with metadata (size, type). Use the combined identifier format '
+                . '"1:/user_upload/", where 1 is the storage UID. '
+                . 'Note: file listing is capped at 100 files per folder; use SearchFile for larger folders or filtered results.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
                     'folder' => [
                         'type' => 'string',
-                        'description' => 'Combined identifier of the folder to browse (e.g. "1:/user_upload/"). Use "/" or omit storage prefix for root of default storage.',
+                        'description' => 'Combined identifier of the folder to browse (e.g. "1:/user_upload/"). Omit to list the storages instead. Use "/" for the root of the default storage.',
                     ],
                     'recursive' => [
                         'type' => 'boolean',
-                        'description' => 'Show nested subfolders recursively (default: false)',
+                        'description' => 'Show nested subfolders recursively (default: false). Only applies when browsing a folder.',
+                    ],
+                    'includeOffline' => [
+                        'type' => 'boolean',
+                        'description' => 'Include offline storages when listing storages (default: false).',
                     ],
                 ],
-                'required' => ['folder'],
+                'required' => [],
             ],
             'annotations' => [
                 'readOnlyHint' => true,
@@ -52,7 +58,14 @@ class BrowseFolderTool extends AbstractRecordTool
      */
     protected function doExecute(array $params): CallToolResult
     {
-        $folderIdentifier = (string)($params['folder'] ?? '/');
+        // No folder given: the caller does not know what exists yet, so answer
+        // the question one level up. Merged in from the former ListStorages
+        // tool — same information, one tool less to discover.
+        if (!isset($params['folder']) || trim((string)$params['folder']) === '') {
+            return $this->listStorages((bool)($params['includeOffline'] ?? false));
+        }
+
+        $folderIdentifier = (string)$params['folder'];
         $recursive = (bool)($params['recursive'] ?? false);
 
         $folder = $this->resolveFolder($folderIdentifier);
@@ -63,6 +76,50 @@ class BrowseFolderTool extends AbstractRecordTool
         $lines[] = '';
 
         $this->renderFolderContents($folder, $lines, $recursive, 0);
+
+        return $this->createSuccessResult(implode("\n", $lines));
+    }
+
+    /**
+     * List the browsable storages with their capabilities and root paths.
+     */
+    private function listStorages(bool $includeOffline): CallToolResult
+    {
+        $storages = GeneralUtility::makeInstance(StorageRepository::class)->findAll();
+
+        $lines = ['FILE STORAGES', '============', ''];
+        $count = 0;
+        foreach ($storages as $storage) {
+            if (!$storage->isBrowsable()) {
+                continue;
+            }
+            if (!$includeOffline && !$storage->isOnline()) {
+                continue;
+            }
+
+            $count++;
+            $flags = [];
+            if ($storage->isPublic()) {
+                $flags[] = 'public';
+            }
+            if ($storage->isWritable()) {
+                $flags[] = 'writable';
+            }
+            if ($storage->isDefault()) {
+                $flags[] = 'default';
+            }
+            if (!$storage->isOnline()) {
+                $flags[] = 'OFFLINE';
+            }
+
+            $lines[] = sprintf('Storage %d: %s [%s]', $storage->getUid(), $storage->getName(), implode(', ', $flags));
+            $lines[] = sprintf('  Root: %d:%s', $storage->getUid(), $storage->getRootLevelFolder(true)->getIdentifier());
+            $lines[] = '';
+        }
+
+        $lines[] = $count === 0
+            ? 'No browsable storages found.'
+            : sprintf('Total: %d storage(s). Pass one of the root paths as "folder" to browse it.', $count);
 
         return $this->createSuccessResult(implode("\n", $lines));
     }
