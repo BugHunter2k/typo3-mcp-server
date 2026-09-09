@@ -8,6 +8,7 @@ use Hn\McpServer\Service\LanguageService;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
 use TYPO3\CMS\Core\Context\Context;
 use TYPO3\CMS\Core\Database\ConnectionPool;
+use TYPO3\CMS\Core\Information\Typo3Version;
 use TYPO3\CMS\Core\Localization\LanguageServiceFactory;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
@@ -124,7 +125,7 @@ abstract class AbstractFunctionalTest extends FunctionalTestCase
     protected function createAndSwitchToWorkspace(string $title = 'Test Workspace'): int
     {
         $connection = $this->connectionPool->getConnectionForTable('sys_workspace');
-        $connection->insert('sys_workspace', [
+        $workspaceData = [
             'title' => $title,
             'description' => 'Workspace for testing',
             'adminusers' => '1',
@@ -140,7 +141,13 @@ abstract class AbstractFunctionalTest extends FunctionalTestCase
             'custom_stages' => 0,
             'uid' => 0,
             'pid' => 0,
-        ]);
+        ];
+        // 'freeze' column was removed in TYPO3 14 (#107323)
+        $typo3Version = GeneralUtility::makeInstance(Typo3Version::class);
+        if ($typo3Version->getMajorVersion() < 14) {
+            $workspaceData['freeze'] = 0;
+        }
+        $connection->insert('sys_workspace', $workspaceData);
         
         $workspaceId = (int)$connection->lastInsertId();
         $this->switchToWorkspace($workspaceId);
