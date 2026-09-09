@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\Http;
 
+use Hn\McpServer\Controller\OAuthResumeController;
 use Hn\McpServer\Service\OAuthService;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
+use TYPO3\CMS\Core\Http\RedirectResponse;
 use TYPO3\CMS\Core\Http\Response;
 use TYPO3\CMS\Core\Http\Stream;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
@@ -116,40 +118,38 @@ class OAuthAuthorizeEndpoint
 
     private function redirectToLogin(ServerRequestInterface $request): ResponseInterface
     {
-        $queryParams = $request->getQueryParams();
-        
-        // Store OAuth parameters in cookie
-        $oauthData = [
-            'client_id' => $queryParams['client_id'] ?? '',
-            'client_name' => $this->resolveClientName($request),
-            'redirect_uri' => $queryParams['redirect_uri'] ?? '',
-            'code_challenge' => $queryParams['code_challenge'] ?? '',
-            'code_challenge_method' => $queryParams['code_challenge_method'] ?? '',
-            'state' => $queryParams['state'] ?? ''
-        ];
-        
-        $oauthDataEncoded = base64_encode(json_encode($oauthData));
-        $loginUrl = $this->getRequestSitePath($request) . '/typo3/index.php?loginProvider=1450629977&login_status=login';
-        
-        // Build cookie string with environment-aware security flags
-        $isHttps = $request->getUri()->getScheme() === 'https';
-        $cookieFlags = 'Max-Age=600; Path=/; HttpOnly; SameSite=Lax';
-        if ($isHttps) {
-            $cookieFlags .= '; Secure';
-        }
-        
-        $stream = new Stream('php://temp', 'rw');
-        $stream->write('');
-        $stream->rewind();
-
-        return new Response(
-            $stream,
-            302,
-            [
-                'Location' => $loginUrl,
-                'Set-Cookie' => 'tx_mcpserver_oauth=' . $oauthDataEncoded . '; ' . $cookieFlags
-            ]
+        $cookie = GeneralUtility::makeInstance(PendingAuthorizationCookie::class);
+        // resolveClientName() already prefers a non-empty client_name from the query and only
+        // then falls back to the Referer host, so it wins over the raw query value here.
+        $pendingAuthorization = $cookie->extract(
+            ['client_name' => $this->resolveClientName($request)] + $request->getQueryParams()
         );
+
+        // The pending authorization is handed across the login on two carriers, because
+        // neither covers every route through the login on its own.
+        //
+        // In a cookie (primary): the query string is lost whenever the login leaves this URL
+        // — the login-provider switch link replaces the whole query, and an SSO login
+        // round-trips through an identity provider that returns to a callback URL rebuilt
+        // from a fixed parameter set. OAuthLoginReturnMiddleware resumes from the cookie.
+        //
+        // In the URL (fallback): TYPO3 resolves the post-login target through RouteRedirect,
+        // which accepts a registered backend route name and never an arbitrary URL — an open
+        // redirector behind the login form would be a phishing vector. BackendController
+        // hands "redirectParams" to that route, where OAuthResumeController picks them up.
+        // This still carries the plain password login if the cookie is unavailable.
+        //
+        // No "loginProvider" is pinned. 1450629977 was not a registered provider, so
+        // LoginProviderResolver discarded it and fell back to the be_lastLoginProvider cookie
+        // and then to the primary provider anyway. Omitting it is behaviourally identical and
+        // lets an SSO-only installation put the user on its own provider directly.
+        $loginUrl = $this->getRequestSitePath($request)
+            . '/typo3/index.php?login_status=login'
+            . '&redirect=' . rawurlencode(OAuthResumeController::ROUTE_NAME)
+            . '&redirectParams=' . rawurlencode(http_build_query($pendingAuthorization));
+
+        return (new RedirectResponse($loginUrl, 302))
+            ->withHeader('Set-Cookie', $cookie->set($request, $pendingAuthorization));
     }
 
     private function handleApproval(ServerRequestInterface $request, int $beUserId): ResponseInterface
@@ -297,19 +297,17 @@ class OAuthAuthorizeEndpoint
         $stream->write($html);
         $stream->rewind();
 
-        // Build cookie cleanup string with environment-aware security flags
-        $isHttps = $request->getUri()->getScheme() === 'https';
-        $cookieCleanupFlags = 'Max-Age=0; Path=/; HttpOnly; SameSite=Lax';
-        if ($isHttps) {
-            $cookieCleanupFlags .= '; Secure';
-        }
-
+        // The login round-trip is over once the consent screen renders, so the parked
+        // authorization is dropped here too — not only by OAuthLoginReturnMiddleware. Two
+        // independent clearing points mean a cookie that outlived its purpose cannot keep
+        // redirecting the user for the rest of its lifetime.
         return new Response(
             $stream,
             200,
             [
                 'Content-Type' => 'text/html; charset=utf-8',
-                'Set-Cookie' => 'tx_mcpserver_oauth=; ' . $cookieCleanupFlags
+                'Set-Cookie' => GeneralUtility::makeInstance(PendingAuthorizationCookie::class)
+                    ->clear($request),
             ]
         );
     }
