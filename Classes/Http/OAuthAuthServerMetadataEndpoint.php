@@ -40,12 +40,12 @@ class OAuthAuthServerMetadataEndpoint
 
         // Add CORS headers
         $response = $this->addCorsHeaders($response, $request);
-        
+
         // Add cache headers (short cache for dynamic content)
         $response = $response
             ->withHeader('Cache-Control', 'public, max-age=300') // 5 minutes
             ->withHeader('Vary', 'Origin');
-        
+
         return $response;
     }
 }
