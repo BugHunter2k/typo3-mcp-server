@@ -54,7 +54,8 @@ class GetPageTool extends AbstractRecordTool
         $domainsText = $this->siteInformationService->getAvailableDomainsText();
         
         $schema = [
-            'description' => 'Get detailed information about a TYPO3 page including its records. Can fetch by page ID or URL. Shows content in the specified language when available.',
+            'description' => 'Get detailed information about a TYPO3 page including its records. Can fetch by page ID or URL. Shows content in the specified language when available. ' .
+                'Every content element lists its frontend anchor (#c<uid>, from the rendered id="c<uid>"). To link to an element — e.g. for a table of contents — use "t3://page?uid=<pageId>#c<uid>" in RTE fields like bodytext.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
@@ -480,6 +481,23 @@ class GetPageTool extends AbstractRecordTool
     }
     
     /**
+     * Get workspace name for display
+     */
+    protected function getWorkspaceInfo(int $workspaceId): string
+    {
+        $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getQueryBuilderForTable('sys_workspace');
+        $queryBuilder->getRestrictions()->removeAll()
+            ->add(GeneralUtility::makeInstance(DeletedRestriction::class));
+        $row = $queryBuilder->select('title')
+            ->from('sys_workspace')
+            ->where($queryBuilder->expr()->eq('uid', $queryBuilder->createNamedParameter($workspaceId, \Doctrine\DBAL\ParameterType::INTEGER)))
+            ->executeQuery()
+            ->fetchAssociative();
+        return $row ? (string)$row['title'] : 'Workspace #' . $workspaceId;
+    }
+
+    /**
      * Format page information as readable text
      */
     protected function formatPageInfo(array $pageData, array $recordsInfo, ?string $pageUrl = null, int $languageId = 0, array $translations = []): string
@@ -614,7 +632,15 @@ class GetPageTool extends AbstractRecordTool
                 $cType = $element['CType'] ?? 'unknown';
                 $cTypeLabel = RecordFormattingUtility::getContentTypeLabel($cType);
                 $result .= "- [" . $element['uid'] . "] " . $title . " (Type: " . $cTypeLabel . " [" . $cType . "])\n";
-                
+
+                // The TYPO3 frontend renders every content element with
+                // id="c<uid>", so #c<uid> is its anchor — usable for tables
+                // of contents and RTE links (t3://page?uid=<pid>#c<uid>).
+                $result .= "  Anchor: #c" . $element['uid'] . "\n";
+                if (!empty($element['header_link'])) {
+                    $result .= "  Header Link: " . $element['header_link'] . "\n";
+                }
+
                 // Show important fields based on content type
                 switch ($cType) {
                     case 'text':

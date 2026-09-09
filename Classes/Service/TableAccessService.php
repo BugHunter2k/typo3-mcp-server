@@ -6,6 +6,7 @@ namespace Hn\McpServer\Service;
 
 use Doctrine\DBAL\ArrayParameterType;
 use Hn\McpServer\Event\AfterSchemaLoadEvent;
+use Hn\McpServer\Event\ModifyAvailableFieldsEvent;
 use Psr\EventDispatcher\EventDispatcherInterface;
 use TYPO3\CMS\Backend\Utility\BackendUtility;
 use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
@@ -372,6 +373,12 @@ class TableAccessService implements SingletonInterface
         $eventDispatcher = GeneralUtility::makeInstance(EventDispatcherInterface::class);
         $event = $eventDispatcher->dispatch(new AfterSchemaLoadEvent($table, $type, $fields));
         $fields = $event->getFields();
+
+        // Also dispatch our public ModifyAvailableFieldsEvent (documented API, same shape
+        // as AfterSchemaLoadEvent) so listeners registered on it can add/remove/replace
+        // fields. The access filter below is re-applied to whatever either event produced.
+        $modifyEvent = $eventDispatcher->dispatch(new ModifyAvailableFieldsEvent($table, $type, $fields));
+        $fields = $modifyEvent->getFields();
 
         // Re-apply field-level access restrictions to any fields added by
         // listeners. Without this second pass, an enrichment listener that
