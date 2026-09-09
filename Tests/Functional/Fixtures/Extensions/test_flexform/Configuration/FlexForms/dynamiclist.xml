@@ -1,0 +1,22 @@
+<T3DataStructure>
+    <sheets>
+        <sDEF>
+            <ROOT>
+                <sheetTitle>Settings</sheetTitle>
+                <type>array</type>
+                <el>
+                    <!-- No static items on purpose: the list is contributed at
+                         runtime by a listener on AfterFlexFormDataStructureParsedEvent,
+                         the way ext:form contributes its form definitions. -->
+                    <settings.dynamicList>
+                        <label>Dynamic list</label>
+                        <config>
+                            <type>select</type>
+                            <renderType>selectSingle</renderType>
+                        </config>
+                    </settings.dynamicList>
+                </el>
+            </ROOT>
+        </sDEF>
+    </sheets>
+</T3DataStructure>

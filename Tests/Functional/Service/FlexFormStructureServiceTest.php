@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Hn\McpServer\Tests\Functional\Service;
 
 use Hn\McpServer\Service\FlexFormStructureService;
+use Hn\McpServer\Tests\Functional\Fixtures\EventListener\RecordingDataStructureListener;
 use Hn\McpServer\Tests\Functional\Traits\PluginContentTrait;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
@@ -30,6 +31,36 @@ class FlexFormStructureServiceTest extends FunctionalTestCase
 
         $this->importCSVDataSet(__DIR__ . '/../Fixtures/be_users.csv');
         $this->setUpBackendUser(1);
+        RecordingDataStructureListener::reset();
+    }
+
+    /**
+     * A dynamic DataStructure must contribute its select items exactly once.
+     *
+     * Observed on a real installation: ext:form's form list came back twice, so
+     * every option was offered twice. The two possible causes need different
+     * fixes, so they are asserted apart — the item count says whether the result
+     * is duplicated, the invocation count says whether the listener ran twice.
+     */
+    public function testDynamicSelectItemsAreContributedOnce(): void
+    {
+        $structure = GeneralUtility::makeInstance(FlexFormStructureService::class)
+            ->resolveDataStructure('tt_content', 'pi_flexform', 'test_dynamicflex', null);
+
+        self::assertIsArray($structure);
+        $items = $structure['sheets']['sDEF']['ROOT']['el'][RecordingDataStructureListener::FIELD]['config']['items'] ?? null;
+        self::assertIsArray($items, 'The dynamic select field must survive the resolution');
+
+        self::assertSame(
+            1,
+            RecordingDataStructureListener::$invocations,
+            'AfterFlexFormDataStructureParsedEvent must be dispatched once per resolution'
+        );
+        self::assertSame(
+            RecordingDataStructureListener::VALUES,
+            array_column($items, 'value'),
+            'The listener contributes each value once; a doubled list means the structure it appended to was not fresh'
+        );
     }
 
     /**
