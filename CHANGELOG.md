@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Ein mehrfach gelisteter Select-Wert wurde doppelt angeboten.**
+  `parseSelectItems()` war in sich widersprüchlich: `labels` ist nach Wert
+  geschlüsselt und hat Wiederholungen eingesammelt, `values` war eine flache
+  Liste und nicht. Alle vier Aufrufer iterieren `values` und schlagen das Label
+  in `labels` nach — ein Wert, den TCA zweimal anbietet, wurde damit zu zwei
+  identischen Optionen, in `GetTableSchema`, `GetFlexFormSchema`, `ListTables`
+  und der Write-Validierung gleichermaßen. `values` trägt jetzt jeden Wert
+  einmal; Divider sind ausgenommen, die markieren Positionen statt Werte.
+
+  Gefunden auf louis-career/staging-ki, wo EXT:form seine Formulardefinitionen
+  doppelt beiträgt, sodass jedes Formular zweimal im FlexForm-Select stand.
+  **Dieser doppelte Beitrag kommt nicht von hier** — TYPO3s eigenes Backend
+  zeigt ihn genauso, und ein neuer Invarianz-Test belegt, dass diese Extension
+  die DataStructure einmal auflöst (ein Dispatch, Items einfach). Ausgeschlossen
+  wurden dabei außerdem: doppelte `sys_file`-Zeilen, Rekursion über Unterordner,
+  ein zweiter Mount oder Symlink, ein Mount ohne führenden Slash, eine
+  Doppelregistrierung des Listeners und ein veralteter DI-Cache.
+
+  **Offen:** die Ursache des doppelten Beitrags. Der einzige nicht geprüfte Ort
+  ist `module.tx_form.settings.persistenceManager.allowedFileMounts` im
+  TypoScript aus der Datenbank — steht dort derselbe Pfad unter zwei
+  Schlüsseln, liest `getAccessibleFormStorageFolders()` denselben Ordner
+  zweimal, denn es schlüsselt nach dem Mount-String statt nach dem aufgelösten
+  Ordner. Das ist unabhängig davon eine Fragilität im Core und einen
+  Upstream-Report wert.
+
 - **The pre-signed upload URL pointed outside the `/mcp` prefix.** `UploadFile`
   without arguments advertised `/mcp_upload`, upstream's spelling. Both
   spellings reach the same endpoint, but only `/mcp/upload` sits inside the
