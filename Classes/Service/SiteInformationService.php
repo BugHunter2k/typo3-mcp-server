@@ -120,19 +120,32 @@ class SiteInformationService
         foreach ($sites as $site) {
             $base = $site->getBase();
             $host = $base->getHost();
-            
-            // Add main domain if it's not empty and not just a path
-            if (!empty($host) && $host !== '/') {
+
+            // Add main domain if it's not empty and not just a path. Note:
+            // when a baseVariant condition matches the current application
+            // context, the Site entity already resolved getBase() to that
+            // variant — the configured main base then only exists in the
+            // raw configuration (collected below).
+            if ($this->isPlausibleHostname($host)) {
                 $domains[] = $host;
             }
-            
-            // Check if the site has base variants (method may not exist in all TYPO3 versions)
-            if (method_exists($site, 'getBaseVariants')) {
-                foreach ($site->getBaseVariants() ?? [] as $variant) {
-                    $variantHost = $variant->getBase()->getHost();
-                    if (!empty($variantHost) && $variantHost !== '/' && !in_array($variantHost, $domains)) {
-                        $domains[] = $variantHost;
-                    }
+
+            // The Site entity has no getter for base variants; they only
+            // exist in the raw site configuration. Collect the configured
+            // base and every baseVariant host so ALL domains the instance
+            // serves are listed, independent of the current context.
+            // Scheme-less bases yield no host from parse_url and are omitted;
+            // TYPO3's site handling requires a scheme (or a leading slash),
+            // so such entries are broken configuration, not real domains.
+            $configuration = $site->getConfiguration();
+            $configuredBases = array_merge(
+                [$configuration['base'] ?? ''],
+                array_column($configuration['baseVariants'] ?? [], 'base')
+            );
+            foreach ($configuredBases as $configuredBase) {
+                $configuredHost = (string)parse_url((string)$configuredBase, PHP_URL_HOST);
+                if ($this->isPlausibleHostname($configuredHost) && !in_array($configuredHost, $domains, true)) {
+                    $domains[] = $configuredHost;
                 }
             }
         }
@@ -146,6 +159,18 @@ class SiteInformationService
         }
 
         return array_unique($domains);
+    }
+
+    /**
+     * Whether a string is a syntactically plausible hostname. Site bases may
+     * carry unresolved %env(...)% placeholders (TYPO3 leaves the literal text
+     * in place when the variable is unset) — those must not surface as
+     * domains: the MCP gateway validates hosts with exactly this rule and
+     * would reject the project's whole .mcp.json otherwise.
+     */
+    protected function isPlausibleHostname(string $host): bool
+    {
+        return $host !== '' && preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$/', $host) === 1;
     }
 
     /**
@@ -246,8 +271,43 @@ class SiteInformationService
     }
 
     /**
+     * Get the base URL for the current request context
+     *
+     * Returns a full URL like "https://example.com" that can be used
+     * to build absolute URLs. Uses Site configuration first, falls back
+     * to request headers (proxy-safe).
+     *
+     * @return string|null Base URL or null if unavailable
+     */
+    public function getBaseUrl(): ?string
+    {
+        // Try to get from first available site
+        $sites = $this->siteFinder->getAllSites();
+        foreach ($sites as $site) {
+            $base = $site->getBase();
+            $baseUrl = (string)$base;
+
+            // If site has a proper base URL (not just "/")
+            if (!empty($baseUrl) && $baseUrl !== '/' && strpos($baseUrl, 'http') === 0) {
+                return rtrim($baseUrl, '/');
+            }
+        }
+
+        // Fallback to current request
+        if ($this->currentRequest !== null) {
+            $host = $this->getHostFromRequest();
+            if (!empty($host)) {
+                $scheme = $this->currentRequest->getUri()->getScheme() ?: 'https';
+                return $scheme . '://' . $host;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Get host from current request
-     * 
+     *
      * @return string|null
      */
     protected function getHostFromRequest(): ?string
