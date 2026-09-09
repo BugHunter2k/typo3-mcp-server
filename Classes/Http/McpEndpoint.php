@@ -4,27 +4,25 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\Http;
 
+use Hn\McpServer\MCP\McpServerFactory;
+use Hn\McpServer\Service\BackendUserContextService;
+use Hn\McpServer\Service\OAuthService;
+use Hn\McpServer\Service\SiteInformationService;
+use Hn\McpServer\Service\WorkspaceContextService;
 use Mcp\Server\HttpServerRunner;
-use Mcp\Server\Transport\Http\StandardPhpAdapter;
 use Mcp\Server\Transport\Http\FileSessionStore;
+use Mcp\Server\Transport\Http\HttpMessage;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
 use TYPO3\CMS\Core\Configuration\ExtensionConfiguration;
-use TYPO3\CMS\Core\Core\Environment;
-use TYPO3\CMS\Core\Authentication\BackendUserAuthentication;
-use TYPO3\CMS\Core\Utility\GeneralUtility;
-use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Context\Context;
 use TYPO3\CMS\Core\Context\FileProcessingAspect;
 use TYPO3\CMS\Core\Context\UserAspect;
 use TYPO3\CMS\Core\Context\WorkspaceAspect;
+use TYPO3\CMS\Core\Core\Environment;
 use TYPO3\CMS\Core\Http\Response;
 use TYPO3\CMS\Core\Http\Stream;
-use Psr\Http\Message\ResponseInterface;
-use Psr\Http\Message\ServerRequestInterface;
-use Hn\McpServer\MCP\McpServerFactory;
-use Hn\McpServer\Service\WorkspaceContextService;
-use Hn\McpServer\Service\OAuthService;
-use Hn\McpServer\Service\SiteInformationService;
-use Hn\McpServer\Http\CorsHeadersTrait;
+use TYPO3\CMS\Core\Utility\GeneralUtility;
 
 /**
  * MCP HTTP Endpoint for remote access
@@ -35,35 +33,92 @@ class McpEndpoint
     use RequestUrlTrait;
 
     /**
-     * Headers whose value must never reach the log. Lower-case for comparison.
+     * Header and query parameter names whose values must never reach a log file.
+     *
+     * Access tokens are handed out with a 30 day lifetime, so a single logged
+     * request is enough to leak a long lived credential to everyone who can read
+     * - or forward - the log.
      */
-    private const REDACTED_HEADERS = ['authorization', 'cookie', 'proxy-authorization'];
-
-    private ?bool $verboseLogging = null;
+    private const CREDENTIAL_KEYS = [
+        'authorization',
+        'proxy-authorization',
+        'cookie',
+        'set-cookie',
+        'token',
+        'access_token',
+        'refresh_token',
+        'client_secret',
+    ];
 
     /**
-     * Is the per-request trace switched on (extension setting ``debugLogging``)?
+     * Whether the endpoint may write its diagnostic output to the log.
      *
-     * Off by default: it is several lines per request, and on an installation serving a
-     * few hundred MCP calls a day it buries everything else in the PHP error log —
-     * including the authentication failures, which are logged regardless of this setting
-     * because they are what you go looking for when something is wrong.
+     * The endpoint is polled by connector proxies in a retry loop, so logging
+     * every request unconditionally fills a production log with entries nobody
+     * asked for and nobody reads. Diagnostics are therefore limited to the
+     * Development context, which is also where they are actually needed.
      */
-    private function isVerboseLogging(): bool
+    private ?bool $debugLoggingConfigured = null;
+
+    /**
+     * Whether the per-request trace is written. Two triggers: the Development
+     * application context (upstream's rule), and the extension setting
+     * ``debugLogging``. The setting exists because the context is not a lever
+     * you can pull on a production installation — and a production
+     * installation is exactly where a connection problem needs diagnosing.
+     * Off by default either way: it is several lines per request and buries
+     * everything else in the PHP error log. Authentication failures are logged
+     * regardless.
+     */
+    private function isDebugLoggingEnabled(): bool
     {
-        if ($this->verboseLogging === null) {
+        if (Environment::getContext()->isDevelopment()) {
+            return true;
+        }
+
+        if ($this->debugLoggingConfigured === null) {
             try {
                 $configured = GeneralUtility::makeInstance(ExtensionConfiguration::class)
                     ->get('mcp_server', 'debugLogging');
             } catch (\Exception) {
-                // No extension configuration written yet (fresh install) — an expected
-                // state, and "not configured" means "not enabled".
+                // No extension configuration written yet (fresh install) — an
+                // expected state, and "not configured" means "not enabled".
                 $configured = false;
             }
-            $this->verboseLogging = (bool)$configured;
+            $this->debugLoggingConfigured = (bool)$configured;
         }
 
-        return $this->verboseLogging;
+        return $this->debugLoggingConfigured;
+    }
+
+    /**
+     * Write a diagnostic message, unless the context says otherwise.
+     */
+    private function logDebug(string $message): void
+    {
+        if (!$this->isDebugLoggingEnabled()) {
+            return;
+        }
+
+        error_log($message);
+    }
+
+    /**
+     * Replace credential values with a marker while keeping the key itself, so the
+     * log still shows which headers and parameters a client actually sent.
+     *
+     * @param array<string, mixed> $values
+     * @return array<string, mixed>
+     */
+    private function redactCredentials(array $values): array
+    {
+        foreach ($values as $key => $value) {
+            if (in_array(strtolower((string)$key), self::CREDENTIAL_KEYS, true)) {
+                $values[$key] = '***redacted***';
+            }
+        }
+
+        return $values;
     }
 
     /**
@@ -72,9 +127,10 @@ class McpEndpoint
     public function __invoke(ServerRequestInterface $request): ResponseInterface
     {
         try {
-            // Handle CORS preflight before any auth check - browsers send OPTIONS
-            // without credentials/tokens, so returning 401 here breaks every
-            // cross-origin POST from the MCP Inspector or other browser clients.
+            // Handle CORS preflight before any auth check - browsers send
+            // OPTIONS without credentials, so a 401 here breaks every
+            // cross-origin POST from the MCP Inspector or other browser
+            // clients.
             if ($request->getMethod() === 'OPTIONS') {
                 return $this->handlePreflightRequest($request);
             }
@@ -83,30 +139,18 @@ class McpEndpoint
             $container = GeneralUtility::getContainer();
             $serverFactory = $container->get(McpServerFactory::class);
 
-            // Debug: Log all request details.
-            //
-            // Credentials are redacted first. extractToken() accepts the bearer either in
-            // the Authorization header or — for backward compatibility — in the "token"
-            // query parameter, and both were previously written out verbatim on every
-            // request, putting usable access tokens into the PHP error log of every
-            // installation.
             $queryParams = $request->getQueryParams();
 
-            if ($this->isVerboseLogging()) {
-                $headers = [];
+            // Debug: Log all request details
+            if ($this->isDebugLoggingEnabled()) {
+                $requestHeaders = [];
                 foreach ($request->getHeaders() as $name => $values) {
-                    $headers[$name] = in_array(strtolower((string)$name), self::REDACTED_HEADERS, true)
-                        ? '<redacted>'
-                        : implode(', ', $values);
-                }
-                $loggableQuery = $queryParams;
-                if (isset($loggableQuery['token'])) {
-                    $loggableQuery['token'] = '<redacted>';
+                    $requestHeaders[$name] = implode(', ', $values);
                 }
 
                 error_log("MCP: Request method: " . $request->getMethod());
-                error_log("MCP: Request headers: " . json_encode($headers));
-                error_log("MCP: Query params: " . json_encode($loggableQuery));
+                error_log("MCP: Request headers: " . json_encode($this->redactCredentials($requestHeaders)));
+                error_log("MCP: Query params: " . json_encode($this->redactCredentials($queryParams)));
             }
 
             // Check if this is an auth header test request
@@ -117,30 +161,28 @@ class McpEndpoint
             // Authenticate via Bearer token or query parameter
             $token = $this->extractToken($request);
 
+            // Authentication failures are logged unconditionally, not through
+            // logDebug(): they are the entries somebody goes looking for when a
+            // connection does not work, and requiring the trace to be switched
+            // on first means the one line that explains the 401 is missing
+            // exactly when it is needed. Neither line carries token material.
             if (!$token) {
-                error_log("MCP: No token found in Authorization header or query params");
+                error_log('MCP: No authentication token in Authorization header or query params');
                 return $this->createUnauthorizedResponse('Missing authentication token', $request);
             }
 
-            // Only that a token arrived, never any part of it. A 20-character prefix is
-            // still a fragment of a live credential and buys no diagnostic value the
-            // length does not — whether validation succeeded is logged below, with the
-            // resolved be_user_uid, which is the identifier worth having.
-            if ($this->isVerboseLogging()) {
-                error_log("MCP: Bearer token present (" . strlen($token) . " chars)");
-            }
+            // Log authentication status without exposing token material
+            $this->logDebug('MCP: Received authentication token');
 
             $oauthService = GeneralUtility::makeInstance(OAuthService::class);
             $tokenInfo = $oauthService->validateToken($token, $request);
 
             if (!$tokenInfo) {
-                error_log("MCP: Token validation failed");
+                error_log('MCP: Authentication token validation failed');
                 return $this->createUnauthorizedResponse('Invalid or expired token', $request);
             }
 
-            if ($this->isVerboseLogging()) {
-                error_log("MCP: Token validation successful for user: " . $tokenInfo['be_user_uid']);
-            }
+            $this->logDebug("MCP: Token validation successful for user: " . $tokenInfo['be_user_uid']);
 
             // Set up TYPO3 backend context for the authenticated user
             $this->setupBackendUserContext($tokenInfo['be_user_uid']);
@@ -151,7 +193,10 @@ class McpEndpoint
                 $siteInformationService->setCurrentRequest($request);
             }
 
-            // Create MCP server instance using the factory (pass request for RequestAwareToolInterface)
+            // Create MCP server instance using the factory. The request is
+            // passed on for tools implementing RequestAwareToolInterface,
+            // which resolve absolute URLs from the request host rather than
+            // from the site configuration.
             $server = $serverFactory->createServer(null, $request);
 
             // Configure HTTP options
@@ -179,63 +224,52 @@ class McpEndpoint
                 $sessionStore
             );
 
-            // Handle the request and capture output
-            ob_start();
-
-            // Suppress warnings/notices from MCP SDK to prevent deprecation issues
-            $oldErrorReporting = error_reporting(E_ERROR | E_PARSE);
-
-            try {
-                $adapter = new StandardPhpAdapter($runner);
-                $adapter->handle();
-            } finally {
-                // Restore error reporting
-                error_reporting($oldErrorReporting);
+            // Convert the PSR-7 request into the SDK's HttpMessage and let the
+            // runner handle it directly. This keeps the whole request/response
+            // cycle inside PSR-7 (no superglobals, no output buffering), which
+            // also makes the endpoint testable in functional tests.
+            $mcpRequest = new HttpMessage((string)$request->getBody());
+            $mcpRequest->setMethod($request->getMethod());
+            $mcpRequest->setUri((string)$request->getUri());
+            $mcpRequest->setQueryParams($request->getQueryParams());
+            foreach ($request->getHeaders() as $name => $values) {
+                $mcpRequest->setHeader($name, implode(', ', $values));
             }
 
-            $output = ob_get_clean();
+            $mcpResponse = $runner->handleRequest($mcpRequest);
 
-            // Get the status code set by the adapter
-            $statusCode = http_response_code() ?: 200;
-
-            // Diagnostic: which method got which status, and whether a session id came
-            // with it. The gateway's MCP client terminates each backend session with a
-            // DELETE and logs "Session termination failed: 202" — but the SDK's
-            // handleDeleteRequest() expires the session and answers 204, and 202 is what
-            // it returns elsewhere for "accepted, nothing to send back". So the DELETE is
-            // most likely never reaching that handler, which would mean sessions are left
-            // to time out (session_timeout, 1800s) instead of being closed. This line
-            // says which of the two it is.
-            if ($this->isVerboseLogging()) {
-                error_log(sprintf(
-                    'MCP: %s -> %d (session id %s)',
-                    $request->getMethod(),
-                    $statusCode,
-                    $request->getHeaderLine('Mcp-Session-Id') !== '' ? 'present' : 'absent'
-                ));
-            }
-
-            // Try to decode as JSON, fallback to plain text
-            $decodedOutput = json_decode($output, true);
-            $contentType = $decodedOutput !== null ? 'application/json' : 'text/plain';
-
-            // Create proper stream for response
             $stream = new Stream('php://temp', 'rw');
-            $stream->write($output);
+            $stream->write((string)($mcpResponse->getBody() ?? ''));
             $stream->rewind();
 
-            // CORS headers are required on the actual response too - browsers
-            // block reading any cross-origin response without them, even after
-            // a successful preflight.
+            $headers = $mcpResponse->getHeaders();
+            if (!isset($headers['content-type'])) {
+                $headers['content-type'] = 'application/json';
+            }
+
             $response = new Response(
                 $stream,
-                $statusCode,
-                ['Content-Type' => $contentType]
+                $mcpResponse->getStatusCode(),
+                $headers
             );
 
             return $this->addCorsHeaders($response, $request);
 
         } catch (\Throwable $e) {
+            // Deliberately not behind the debug switch: this catch-all is the only
+            // place where an exception from the MCP layer becomes visible at all,
+            // and handing it to the client alone means it is gone the moment the
+            // client discards the 500.
+            error_log(sprintf(
+                'MCP: Unhandled %s at %s:%d - %s%s%s',
+                get_class($e),
+                $e->getFile(),
+                $e->getLine(),
+                $e->getMessage(),
+                PHP_EOL,
+                $e->getTraceAsString()
+            ));
+
             $stream = new Stream('php://temp', 'rw');
             $stream->write(json_encode([
                 'error' => 'Internal Server Error',
@@ -318,99 +352,28 @@ class McpEndpoint
      */
     private function setupBackendUserContext(int $userId): void
     {
-        $beUser = GeneralUtility::makeInstance(BackendUserAuthentication::class);
+        $userContext = GeneralUtility::makeInstance(BackendUserContextService::class);
+        $beUser = $userContext->impersonate($userId);
 
-        // Load user data
-        $connection = GeneralUtility::makeInstance(ConnectionPool::class)
-            ->getConnectionForTable('be_users');
+        // Pick the workspace the MCP tools work in and keep the Context aspect
+        // in sync with it.
+        $workspaceService = GeneralUtility::makeInstance(WorkspaceContextService::class);
+        $workspaceId = $workspaceService->switchToOptimalWorkspace($beUser);
+        $userContext->updateWorkspaceAspect($workspaceId);
 
-        $queryBuilder = $connection->createQueryBuilder();
-        $userData = $queryBuilder
-            ->select('*')
-            ->from('be_users')
-            ->where($queryBuilder->expr()->eq('uid', $queryBuilder->createNamedParameter($userId)))
-            ->executeQuery()
-            ->fetchAssociative();
+        // Set up TYPO3 Context API (following BackendUserAuthenticator pattern)
+        $context = GeneralUtility::makeInstance(Context::class);
+        $context->setAspect('backend.user', new UserAspect($beUser));
+        $context->setAspect('workspace', new WorkspaceAspect($workspaceId));
 
-        if ($userData) {
-            $beUser->user = $userData;
+        // Disable deferred image processing — DeferredBackendImageProcessor
+        // requires a full backend session with CSRF tokens, which the MCP
+        // endpoints do not have (bearer token only). Without this, every
+        // thumbnail request fails.
+        $context->setAspect('fileProcessing', new FileProcessingAspect(false));
 
-            // CRITICAL: Restore the user's stored configuration (uc). The regular
-            // authentication flow unserializes it via unpack_uc(), which token auth
-            // bypasses. Without this, $beUser->uc stays empty and any writeUC()
-            // triggered during request processing (e.g. the update signals fired
-            // when the MCP workspace is created below) overwrites the user's
-            // stored backend preferences with a nearly empty array. That in turn
-            // breaks the backend Setup module, which expects keys like 'titleLen'
-            // to exist ("Undefined array key" warning in SetupModuleController).
-            $storedUc = unserialize((string)($userData['uc'] ?? ''), ['allowed_classes' => false]);
-            if (is_array($storedUc)) {
-                $beUser->uc = $storedUc;
-            }
-
-            $GLOBALS['BE_USER'] = $beUser;
-
-            // CRITICAL: Initialize an (anonymous) user session.
-            // Normal TYPO3 requests go through BackendUserAuthenticator middleware which wires
-            // up a real UserSession. Token auth bypasses that, so DataHandler write paths
-            // that touch $beUser->setAndSaveSessionData() (FlashMessageQueue, BackendFormProtection)
-            // crash with "Call to a member function set() on null" on UPDATE operations.
-            // An anonymous in-memory session is discarded at request end — sufficient for stateless MCP.
-            $beUser->initializeUserSessionManager();
-
-            // CRITICAL: Fetch group data to populate permissions
-            // This computes tables_select, tables_modify, non_exclude_fields, webmounts, etc.
-            // Without this, non-admin users have no permissions computed from their groups
-            $beUser->fetchGroupData();
-
-            // Apply the uc defaults and TSconfig overrides, exactly like
-            // initializeBackendLogin() does after fetchGroupData() on a regular
-            // login. This covers users who never logged into the backend: their
-            // stored uc is empty, and without the defaults the first writeUC()
-            // would persist a nearly empty uc - which core never repairs, since
-            // backendSetUC() only fills in the defaults while uc is completely
-            // empty.
-            $beUser->backendSetUC();
-
-            // Initialize language service (required for DataHandler and other core components)
-            $this->initializeLanguageService($beUser);
-
-            // Set up workspace context
-            $workspaceService = GeneralUtility::makeInstance(WorkspaceContextService::class);
-            $workspaceId = $workspaceService->switchToOptimalWorkspace($beUser);
-
-            // Set up TYPO3 Context API (following BackendUserAuthenticator pattern)
-            $context = GeneralUtility::makeInstance(Context::class);
-            $context->setAspect('backend.user', new UserAspect($beUser));
-            $context->setAspect('workspace', new WorkspaceAspect($workspaceId));
-
-            // Disable deferred image processing — DeferredBackendImageProcessor requires a full
-            // backend session with CSRF tokens, which MCP endpoints don't have (Bearer token only).
-            $context->setAspect('fileProcessing', new FileProcessingAspect(false));
-
-            // Log workspace selection for debugging
-            error_log("MCP: User {$userId} switched to workspace {$workspaceId}");
-        }
-
-        // Ensure TCA is loaded using proper TYPO3 core method
-        $tcaFactory = GeneralUtility::getContainer()->get(\TYPO3\CMS\Core\Configuration\Tca\TcaFactory::class);
-        $GLOBALS['TCA'] = $tcaFactory->get();
-    }
-
-    /**
-     * Initialize language service for the backend user
-     */
-    private function initializeLanguageService(BackendUserAuthentication $beUser): void
-    {
-        // Get user's preferred language or fall back to default
-        $userLanguage = $beUser->user['lang'] ?? 'default';
-
-        // Create language service
-        $languageServiceFactory = GeneralUtility::makeInstance(\TYPO3\CMS\Core\Localization\LanguageServiceFactory::class);
-        $languageService = $languageServiceFactory->createFromUserPreferences($beUser);
-
-        // Set global language service
-        $GLOBALS['LANG'] = $languageService;
+        // Log workspace selection for debugging
+        $this->logDebug("MCP: User {$userId} switched to workspace {$workspaceId}");
     }
 
     /**
