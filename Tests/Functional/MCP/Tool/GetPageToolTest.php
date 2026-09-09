@@ -13,6 +13,7 @@ use Hn\McpServer\Service\WorkspaceContextService;
 use Hn\McpServer\Tests\Functional\Traits\PluginContentTrait;
 use Mcp\Types\TextContent;
 use Symfony\Component\Yaml\Yaml;
+use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Site\SiteFinder;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\TestingFramework\Core\Functional\FunctionalTestCase;
@@ -280,15 +281,53 @@ class GetPageToolTest extends FunctionalTestCase
         $this->assertStringContainsString('Content Elements (tt_content)', $content);
         $this->assertStringContainsString('[102] Team Introduction', $content);
         $this->assertStringContainsString('[103] Team Members', $content);
-        
+
         // Verify content types are shown
         $this->assertStringContainsString('Type:', $content);
         $this->assertStringContainsString('textmedia', $content);
-        
+
         // Verify column position information
         $this->assertStringContainsString('[colPos: 0]', $content);
         // Column name can vary based on backend layout configuration
         $this->assertMatchesRegularExpression('/Column: .+ \[colPos: 0\]/', $content);
+
+        // Verify every content element exposes its frontend anchor (#c<uid>)
+        // so an LLM can build tables of contents with t3://page?uid=2#c<uid>
+        $this->assertStringContainsString('Anchor: #c102', $content);
+        $this->assertStringContainsString('Anchor: #c103', $content);
+    }
+
+    /**
+     * Test that a content element's header_link is exposed in the page output
+     */
+    public function testGetPageShowsHeaderLink(): void
+    {
+        GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getConnectionForTable('tt_content')
+            ->insert('tt_content', [
+                'uid' => 130,
+                'pid' => 2,
+                'header' => 'Linked Header',
+                'header_link' => 't3://page?uid=1#c100',
+                'CType' => 'textmedia',
+                'colPos' => 0,
+                'sorting' => 768,
+                'tstamp' => 1734875000,
+                'crdate' => 1734875000,
+            ]);
+
+        $siteInformationService = GeneralUtility::makeInstance(SiteInformationService::class);
+        $languageService = GeneralUtility::makeInstance(LanguageService::class);
+        $tool = new GetPageTool($siteInformationService, $languageService);
+
+        $result = $tool->execute(['uid' => 2]);
+
+        $this->assertFalse($result->isError, json_encode($result->jsonSerialize()));
+        $content = $result->content[0]->text;
+
+        $this->assertStringContainsString('[130] Linked Header', $content);
+        $this->assertStringContainsString('Anchor: #c130', $content);
+        $this->assertStringContainsString('Header Link: t3://page?uid=1#c100', $content);
     }
 
     /**
