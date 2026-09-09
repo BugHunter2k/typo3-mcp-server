@@ -22,5 +22,11 @@ return [
                 'typo3/cms-core/normalized-params-attribute',
             ],
         ],
+        'hn-mcp-server/workspace-record-preview' => [
+            'target' => \Hn\McpServer\Middleware\WorkspaceRecordPreviewMiddleware::class,
+            'after' => [
+                'typo3/cms-backend/authentication',
+            ],
+        ],
     ],
 ];
