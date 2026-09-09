@@ -114,14 +114,22 @@ The MCP Server provides these tools for interacting with TYPO3:
 - **ListTables** - Discover available TYPO3 tables and extensions
 
 ### Content Reading
-- **ReadTable** - Read records from any TYPO3 table with filtering
+- **ReadTable** - Read records from any TYPO3 table with filtering, pagination, and optional field selection. Embedded inline relations return full child records, independent relations return UIDs. Hidden records included, deleted excluded. Max limit: 1000
 - **Search** - Find content across tables using full-text search
-- **GetTableSchema** - Understand table structure and field types
-- **GetFlexFormSchema** - Get plugin configuration schemas
+- **GetTableSchema** - Understand table structure and field types for a specific record type. Types may be filtered by backend TSconfig
+- **GetFlexFormSchema** - Inspect a plugin FlexForm DataStructure (declared fields, types, allowed values). Prerequisite for FlexForm writes; the identifier is the record's CType
 
 ### Content Modification
-- **WriteTable** - Create, update, or delete records (safely in workspace)
-- **UploadFile** - Add new files to the file storage from a URL (including YouTube/Vimeo), from raw text content, or via a single-use upload token for local files (`/mcp_upload`, see below); never overwrites or deletes existing files
+- **WriteTable** - Create, update, translate, move, or delete records (safely in workspace). Inline relations use replace-all semantics on update — include existing UIDs to keep them. Supports `{"uid": N}` to reference existing children with optional field updates. Nested inline relations and file field references supported. FlexForm fields take a nested JSON object as a partial patch (omitted fields keep their stored values, each field must be declared by the record's DataStructure) — never raw XML, which is stored verbatim and drops every value it omits
+
+### File Management
+- **ListStorages** - List available file storages with capabilities (public, writable, default)
+- **BrowseFolder** - Browse folder contents with metadata (100 files per folder limit)
+- **SearchFile** - Search for files by name, extension, folder, or MIME type with optional Base64 JPEG thumbnails (150x150px). At least one search criterion required
+- **PreviewFile** - Generate file preview as inline Base64 image (default) or download URL. Supports lookup by sys_file UID or combined identifier. Width/height clamped to 1200px max. PDF/Office previews require PSR-14 event listeners
+- **UploadFile** - Upload files via Base64 (best for files < 1 MB). Prefer GetUploadCredentials for larger files
+- **ImportFileFromUrl** - Import files from a public URL (server-side download, 30s timeout, redirects followed)
+- **GetUploadCredentials** - Generate one-time upload token for direct HTTP upload via curl (up to 50 MB, 5-minute expiry, SHA-256 hashed token storage)
 
 > Each tool provides detailed schema information when called. See the Real-World Scenarios below for practical examples.
 
@@ -161,38 +169,6 @@ Here are practical examples of how the MCP Server enables AI-powered content man
     "sys_language_uid": "de",
     "header": "Über uns",
     "bodytext": "[translated content]"
-  }
-}}
-```
-
-### "Put this image on the homepage"
-
-**User says**: "Put this image on our homepage: https://example.org/press/team.jpg"
-
-**What happens**:
-1. AI uses `UploadFile` with the URL - the TYPO3 server downloads the file into the user's upload folder
-2. The response carries the new `sys_file` uid, its public URL, and a hint on how to reference it
-3. AI uses `GetPage` to find the homepage and its content area
-4. AI uses `WriteTable` to create a content element that references the file via `uid_local`
-
-**Tool calls**:
-```json
-// 1. Upload the file (targetFolder defaults to the user's upload folder)
-{"tool": "UploadFile", "params": {"url": "https://example.org/press/team.jpg"}}
-// -> {"uid": 42, "fileName": "team.jpg", "identifier": "1:/user_upload/team.jpg", ...}
-
-// 2. Find the homepage
-{"tool": "GetPage", "params": {"url": "/"}}
-
-// 3. Create the content element referencing the file
-{"tool": "WriteTable", "params": {
-  "table": "tt_content",
-  "action": "create",
-  "pid": 1,
-  "data": {
-    "CType": "image",
-    "header": "Our team",
-    "image": [{"uid_local": 42, "alternative": "The team in front of the office"}]
   }
 }}
 ```
@@ -286,7 +262,7 @@ Relations are transparently resolved and can be set using simple syntax:
 - **Select relations**: Use comma-separated IDs or arrays
 - **Inline relations**: Provide as nested objects
 - **MM relations**: Handled automatically
-- **File references**: Created and updated as embedded inline records (reference existing `sys_file` UIDs via `uid_local`)
+- **File references**: Provide `sys_file` UIDs to create references with optional metadata (alt, title, description)
 - **Bidirectional**: Updates both sides as needed
 
 ### Language Support
@@ -303,6 +279,49 @@ Example:
 // Instead of: "sys_language_uid": 1
 // Use: "sys_language_uid": "de"
 ```
+
+### Large File Uploads (Pre-Signed URL Pattern)
+
+For files larger than ~2MB, the Base64 encoding over MCP JSON-RPC becomes impractical. The MCP Server provides a pre-signed URL pattern (similar to AWS S3) for direct HTTP uploads:
+
+```
+1. AI calls GetUploadCredentials(folder, filename)
+   → Server generates one-time token, returns URL + token
+
+2. AI runs curl in Bash:
+   curl -X POST 'https://example.com/mcp/upload' \
+     -H 'Authorization: Bearer <token>' \
+     -F 'file=@/path/to/local/file.jpg'
+   → File uploaded directly via HTTP, no Base64
+
+3. Server validates token, uploads to FAL
+   → Returns { uid, name, size, mimeType, path, url }
+```
+
+**Security model:**
+- One-time tokens stored as SHA-256 hash in database
+- Tokens expire after 5 minutes
+- Target folder and filename locked at token creation time
+- BE user permissions re-validated at upload time
+- File extension allowlist + MIME type validation
+- SVG sanitization for SVG uploads
+
+#### Upload Endpoint Details
+
+The upload endpoint (`POST /mcp/upload`) is a standalone HTTP handler that operates outside the normal MCP JSON-RPC transport. It authenticates via one-time Bearer tokens instead of the MCP session.
+
+**Request flow:**
+
+1. **Token consumption** — The Bearer token is SHA-256 hashed and atomically consumed (marked as used) in the database. This prevents replay attacks.
+2. **User re-validation** — The backend user associated with the token is verified as still active (not disabled/deleted).
+3. **Context setup** — A backend user context is bootstrapped with workspace support, but without a full TYPO3 backend session. Image processing is set to synchronous mode (`FileProcessingAspect(false)`) because the deferred processor requires CSRF tokens that don't exist in this context.
+4. **File validation** — Size limits, file extension allowlist, MIME type detection (via `finfo`), and extension-to-MIME consistency checks are enforced.
+5. **FAL storage** — The file is added via `ResourceStorage::addFile()`, then metadata (width/height for images) is explicitly extracted via `Indexer::extractMetaData()`.
+6. **Preview generation** — For images, a thumbnail is pre-generated so it's immediately available in the TYPO3 backend.
+
+**Why synchronous image processing?** The `DeferredBackendImageProcessor` generates a backend URL containing a CSRF token for lazy image processing. This works in the TYPO3 backend where a full session exists, but the upload endpoint only has a one-time Bearer token. Setting `FileProcessingAspect(false)` routes processing through `LocalImageProcessor` which processes images immediately without requiring a backend session.
+
+**Why explicit metadata extraction?** TYPO3's `Indexer::createIndexEntry()` only runs metadata extractors when `auto_extract_metadata` is enabled on the storage, and its built-in `extractRequiredMetaData()` skips non-local drivers (like S3). Calling `Indexer::extractMetaData()` explicitly ensures that registered extractors (e.g., the S3 driver's image dimension extractor) always run, preventing missing `width`/`height` errors in frontend rendering.
 
 ### Workspace Magic
 
@@ -347,12 +366,9 @@ The MCP Server respects all TYPO3 permissions:
 
 While the MCP Server is powerful, some features are still in development:
 
-### Image/File Handling
-- Files are create-only: `UploadFile` adds new files (from URL, YouTube/Vimeo URL, or text content), but existing files can never be overwritten or deleted through MCP. Physical files are not workspace-versioned in TYPO3, so any destructive file operation would be immediately live and irreversible — name conflicts are auto-renamed and identical content is deduplicated instead.
-- Local files on the MCP client's machine are uploaded out-of-band: calling `UploadFile` without `url`/`content` returns the upload endpoint (`/mcp_upload`) plus a single-use token (15-minute TTL, bound to the user and target folder) to be sent as `Authorization: Bearer` header. The client PUTs the raw bytes there — binary data never travels through the model's context — and receives the created `sys_file` as JSON. The token is consumed by the attempt, so a failed upload requires a fresh one.
-- The maximum accepted file size (URL downloads and pre-signed uploads) is configurable via the extension setting `maxFileSizeMb` (default 500).
-- File metadata (`sys_file_metadata`) remains editable through WriteTable (workspace-staged).
-- No visual/semantic image search yet — finding images relies on file names and metadata.
+### File References
+- File references (`sys_file_reference`) can be created via WriteTable using file field names
+- File metadata (alt text, title, description) can be set when creating references
 
 ### Direct Workspace Management
 - Cannot create/delete workspaces
