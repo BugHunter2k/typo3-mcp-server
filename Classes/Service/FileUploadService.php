@@ -440,6 +440,18 @@ class FileUploadService implements SingletonInterface
             ->where($gcQuery->expr()->lt('expires', $gcQuery->createNamedParameter(time() - 86400, \Doctrine\DBAL\ParameterType::INTEGER)))
             ->executeStatement();
 
+        // A fresh install that has not run the schema update yet fails here
+        // with a raw SQL error naming a missing table, which sends the caller
+        // looking in the wrong place. Say what to do instead.
+        if (!$connection->createSchemaManager()->tablesExist(['tx_mcpserver_upload_tokens'])) {
+            throw new \RuntimeException(
+                'The database table "tx_mcpserver_upload_tokens" does not exist yet. A TYPO3 admin has to run the '
+                . 'Database Analyzer (Admin Tools → Maintenance → Analyze Database Structure) to create it. '
+                . 'Uploads via "url" or "content" work without it; only the pre-signed upload URL needs the table.',
+                1757400000
+            );
+        }
+
         $connection->insert('tx_mcpserver_upload_tokens', [
                 'token' => hash('sha256', $token),
                 'be_user_uid' => $userUid,
