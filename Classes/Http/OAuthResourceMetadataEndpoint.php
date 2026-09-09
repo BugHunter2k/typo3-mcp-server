@@ -27,7 +27,7 @@ class OAuthResourceMetadataEndpoint
 
         // Get base URL from request
         $baseUrl = $this->getRequestBaseUrl($request);
-        
+
         $metadata = [
             'resource' => $baseUrl . '/mcp',
             'authorization_servers' => [
