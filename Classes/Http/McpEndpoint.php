@@ -150,8 +150,11 @@ class McpEndpoint
                 $siteInformationService->setCurrentRequest($request);
             }
 
-            // Create MCP server instance using the factory
-            $server = $serverFactory->createServer();
+            // Create MCP server instance using the factory. The request is
+            // passed on for tools implementing RequestAwareToolInterface,
+            // which resolve absolute URLs from the request host rather than
+            // from the site configuration.
+            $server = $serverFactory->createServer(null, $request);
 
             // Configure HTTP options
             $httpOptions = [

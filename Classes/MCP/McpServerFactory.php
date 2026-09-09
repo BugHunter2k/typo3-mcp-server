@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Hn\McpServer\MCP;
 
+use Hn\McpServer\MCP\Tool\RequestAwareToolInterface;
 use Mcp\Server\Server;
 use Mcp\Server\InitializationOptions;
 use Mcp\Server\NotificationOptions;
@@ -11,6 +12,7 @@ use Mcp\Types\CallToolResult;
 use Mcp\Types\ListToolsResult;
 use Mcp\Types\TextContent;
 use Mcp\Types\Tool;
+use Psr\Http\Message\ServerRequestInterface;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Core\Utility\ExtensionManagementUtility;
 use TYPO3\CMS\Core\Information\Typo3Version;
@@ -29,12 +31,12 @@ class McpServerFactory
      *
      * @param callable|null $debugLogger Optional debug logger function
      */
-    public function createServer(?callable $debugLogger = null): Server
+    public function createServer(?callable $debugLogger = null, ?ServerRequestInterface $request = null): Server
     {
         $serverName = $this->getServerName();
         $server = new Server($serverName);
 
-        $this->registerHandlers($server, $debugLogger);
+        $this->registerHandlers($server, $debugLogger, $request);
 
         return $server;
     }
@@ -76,7 +78,7 @@ class McpServerFactory
     /**
      * Register MCP handlers on the server
      */
-    private function registerHandlers(Server $server, ?callable $debugLogger): void
+    private function registerHandlers(Server $server, ?callable $debugLogger, ?ServerRequestInterface $request = null): void
     {
         $toolRegistry = $this->toolRegistry;
         $debug = $debugLogger ?? static fn($msg) => null;
@@ -104,7 +106,7 @@ class McpServerFactory
         });
 
         // Register tool/call handler
-        $server->registerHandler('tools/call', static function ($params) use ($toolRegistry, $debug) {
+        $server->registerHandler('tools/call', static function ($params) use ($toolRegistry, $debug, $request) {
             $toolName = $params->name;
             $arguments = $params->arguments;
 
@@ -113,6 +115,11 @@ class McpServerFactory
             $tool = $toolRegistry->getTool($toolName);
             if (!$tool) {
                 throw new \InvalidArgumentException('Tool not found: ' . $toolName);
+            }
+
+            // Inject request into tools that need it
+            if ($request !== null && $tool instanceof RequestAwareToolInterface) {
+                $tool->setRequest($request);
             }
 
             try {
