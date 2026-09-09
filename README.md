@@ -38,46 +38,24 @@ With the TYPO3 MCP Server, your AI assistant can help you:
 - **Content Migration**: "Copy all news articles from 2023 to the archive folder" - Reorganize content efficiently
 - **Multi-language Management**: "Ensure all German pages have English translations" - Identify and fill translation gaps
 
-### 🖼️ **Images, Videos & Files**
-- **Add Images From the Web**: "Put this image on our homepage: https://example.org/press/team.jpg" - The AI downloads the file into your file storage and creates the content element that shows it
-- **Embed Videos**: "Put this video on the home page: https://www.youtube.com/watch?v=..." - YouTube and Vimeo links become proper TYPO3 online media assets
-- **Add Text-Based Documents**: "Add this price list as a CSV download on the service page" - Text formats like SVG, CSV or subtitles can be uploaded directly as content
-- **Upload From Your Machine**: "Upload the team photo from my Desktop and add it to the about page" - You get a single-use upload link, so the file goes directly to TYPO3 instead of through the AI's context
-
 All these operations happen safely in workspaces, giving you full control to review before publishing!
 
 > 💡 **Want to know how it works?** Check out our [Technical Overview](TECHNICAL_OVERVIEW.md) for detailed information about the implementation, available tools, and real-world examples with actual tool calls.
 
 ## Project Status
 
-| Feature                         | Status          | Notes |
-|---------------------------------|-----------------|-------|
-| **MCP Connection**              | ✅ Ready         | HTTP and stdin/stdout protocols (thanks to [logiscape/mcp-sdk-php](https://github.com/logiscape/mcp-sdk-php)) |
-| **Authentication**              | ✅ Ready         | OAuth for Backend Users |
-| **Page Tree Navigation**        | ✅ Ready         | Page tree view similar to the TYPO3 backend |
-| **Page Content Discovery**      | ✅ Ready         | Similar to the List or Page module with backend layout support |
-| **Record Reading/Writing**      | ✅ Ready         | Read and write any workspace-capable TYPO3 table (core & extensions) with full schema inspection |
-| **Content Translation**         | ⚠️ Experimental | Implemented, needs real-world testing |
-| **File Upload**                 | ✅ Ready         | From a URL, a YouTube/Vimeo link, raw text content, or a local file via single-use upload URL. Create-only: never overwrites or deletes, identical content is detected, executable files are refused |
-| **File Discovery & References** | ⚠️ Partial      | Browse `sys_file` and metadata within the user's file mounts (incl. public URLs), edit metadata, create file references. No visual or semantic image search yet |
-| **Workspace Selection**         | ❌ Missing       | Currently uses the first writable workspace of the user |
+| Feature                    | Status          | Notes                                                                                                         |
+|----------------------------|-----------------|---------------------------------------------------------------------------------------------------------------|
+| **MCP Connection**         | ✅ Ready         | HTTP and stdin/stdout protocols (thanks to [logiscape/mcp-sdk-php](https://github.com/logiscape/mcp-sdk-php)) |
+| **Authentication**         | ✅ Ready         | OAuth for Backend Users                                                                                       |
+| **Page Tree Navigation**   | ✅ Ready         | Page tree view similar to the TYPO3 backend, workspace-aware                                                  |
+| **Page Content Discovery** | ✅ Ready         | Similar to the List or Page module with backend layout support                                                |
+| **Record Reading/Writing** | ✅ Ready         | Read and write any workspace-capable TYPO3 table with schema inspection, inline relations (`{"uid": N}` syntax for existing records, replace-all semantics on update), file references |
+| **File Management**        | ✅ Ready         | Browse, search, upload (Base64, URL import, direct HTTP upload up to 50 MB), preview as inline Base64 or download URL |
+| **Content Translation**    | ⚠️ Experimental | Implemented, needs real-world testing                                                                         |
+| **Workspace Selection**    | ❌ Missing       | Currently uses the first writable workspace of the user                                                       |
 
 While there are a lot of automated tests, TYPO3 instances are widely different and Language Models are also widely different. Feel free to [create issues here on GitHub](https://github.com/logiscape/mcp-sdk-php/issues) or [share experiences in the typo3-core-ai channel](https://typo3.slack.com/archives/C091M0M7BL6). 
-
-## 🖼️ Files and Images
-
-Your assistant can bring new files into TYPO3, and it picks the right of these four ways on its own:
-
-- **From a URL**: the TYPO3 server downloads the file itself, so the file never has to pass through the AI.
-- **From YouTube or Vimeo**: those links become proper TYPO3 online media assets — the video itself stays where it is.
-- **Directly as content**: text-based documents like SVG, CSV or subtitle files can be uploaded as content, without a URL or a separate upload.
-- **From your own computer**: the assistant hands out a single-use upload link, and your MCP client sends the file directly to TYPO3. Binary data never travels through the AI's context, which keeps large photos both cheap and private.
-
-Uploading is deliberately **create-only** — nothing you already have can be overwritten or deleted. A name that is already taken is resolved by renaming (`image.jpg` becomes `image_01.jpg`), and uploading content that already exists returns the existing file instead of creating a duplicate. Files that could be executed, by the server or by a visitor's browser, are refused, as are files that reconfigure the web server. Downloads only work from public http(s) addresses, and your backend user's file mounts and file permissions apply throughout.
-
-Unlike records, files are not workspace-versioned in TYPO3, so an uploaded file lands in your file storage right away. It only becomes visible on the website once a record references it — and that reference *is* workspace-staged, so the usual review before publishing still applies.
-
-> 💡 See [Put this image on the homepage](TECHNICAL_OVERVIEW.md#put-this-image-on-the-homepage) in the Technical Overview for the actual tool calls, and [Image/File Handling](TECHNICAL_OVERVIEW.md#imagefile-handling) for the upload-token flow and the current limits.
 
 ## Installation
 
@@ -89,16 +67,48 @@ composer require hn/typo3-mcp-server
 - TYPO3 v13.4+
 - TYPO3 Workspaces extension (automatically installed as dependency)
 
-### Configuration
+## Workspace Permissions Setup
 
-The defaults work out of the box. All settings live in the extension configuration
-(**Admin Tools → Settings → Extension Configuration → mcp_server**):
+The MCP server operates in workspace context. Backend users need specific permissions to create content via MCP and publish workspace changes.
 
-| Setting                      | Default             | Purpose |
-|------------------------------|---------------------|---------|
-| `maxFileSizeMb`              | `500`               | Upper limit in MiB for files fetched from a URL or received through an upload link |
-| `additionalReadOnlyTables`   | `sys_file`          | Non-workspace-capable tables exposed read-only — this is what lets the AI browse your files |
-| `additionalStandaloneTables` | `sys_file_metadata` | `hideTable` tables exposed as independent tables — this is what makes file metadata such as titles and alt texts editable |
+### Recommended: Dedicated Backend User Group
+
+Create a backend user group with workspace permissions:
+
+1. **System > Backend User Groups > Create new group**
+2. Title: `LIB: Workspace MCP`
+3. Tab **"Access Lists"**:
+   - **Modules**: Enable `Workspaces` (under "Web")
+4. Tab **"Options"**:
+   - **"Edit in LIVE workspace"**: Check this box
+5. Save
+
+### Workspace Configuration
+
+1. Open the target workspace under **System > Workspaces**
+2. Tab **"Members"**:
+   - Add the group as **Member** (not Owner — Member permissions are sufficient for publishing)
+3. Tab **"Publishing"**:
+   - **"Restrict publishing to workspace owners only"**: Must be **disabled** (otherwise Members cannot publish)
+4. Save
+
+### Assigning Users
+
+1. Open the backend user record
+2. Add the workspace group to their user groups
+3. Ensure the user also has content editing groups (e.g. content element access, page tree mount points)
+4. Save
+
+### Permission Matrix
+
+| Permission | Setting | Configuration Location |
+|---|---|---|
+| Access workspace module | `groupMods: workspaces_admin` | User group > Access Lists > Modules |
+| Edit in live workspace | `workspace_perms: 1` | User group > Options > Checkbox |
+| Join workspace | Group listed as member | sys_workspace > Members |
+| Publish changes | Member + live access + no owner-lock | Combination of group + workspace settings |
+
+> **Why is "Edit in LIVE workspace" required?** The TYPO3 `WorkspacePublishGate` requires live workspace access for Members to publish. Without it, users can work in the workspace but cannot publish their changes. Workspace Owners (listed in `adminusers`) can always publish regardless of this setting.
 
 ## Usage
 
@@ -136,17 +146,10 @@ This method gives you admin privileges by default. Add this to your mcp config f
 ### Gateway Integration: Domain List
 
 When this instance sits behind an MCP routing gateway that maps incoming
-URLs to project backends via a `.mcp.json` file, list every domain the
-instance serves (site bases and all `baseVariants`, e.g. additional
-production domains) in an optional `domains` key. Generate the list with:
-
-```bash
-vendor/bin/typo3 mcp:domains
-# {"domains": ["partner.example.org", "stage.example.com", "www.example.com"]}
-```
-
-Embed the output into the gateway block (`x-mcp-proxy`) of the project's
-`.mcp.json` — that block is the only part the gateway reads:
+URLs to project backends via a `.mcp.json` file, the gateway can resolve a
+pasted site URL (any served domain, e.g. an additional production domain
+or a staging host) to the correct backend AND environment via two optional
+keys in the gateway block (`x-mcp-proxy` — the only part the gateway reads):
 
 ```json
 {
@@ -154,13 +157,29 @@ Embed the output into the gateway block (`x-mcp-proxy`) of the project's
    "x-mcp-proxy": {
       "project": "example",
       "site": "example",
-      "domains": ["partner.example.org", "stage.example.com", "www.example.com"]
+      "domains": {
+         "www.example.com": "production",
+         "partner.example.org": "production"
+      },
+      "domainPatterns": ["*.{environment}.example-cloud.de"]
    }
 }
 ```
 
-The gateway can then resolve URLs from any of these domains (e.g. a pasted
-backend link) to the correct backend.
+- `domains` maps irregular hostnames (typically the per-site production
+  domains) to their environment.
+- `domainPatterns` factor the regular site×environment host matrix (e.g.
+  `de.staging3.example-cloud.de`) into one entry per host suffix; the
+  gateway validates the `{environment}` label against the project's routes.
+
+Both keys are written by the LIA `.mcp.json` generator from the committed
+site configurations. To cross-check which domains the running instance
+actually serves (all site bases + `baseVariants`), print the flat inventory:
+
+```bash
+vendor/bin/typo3 mcp:domains
+# {"domains": ["de.staging1.example-cloud.de", "partner.example.org", ...]}
+```
 
 ## Development
 
@@ -186,7 +205,7 @@ Build/runTests.sh -h
 
 ### Adding New Tools
 
-Tools are defined in the `Classes/MCP/Tool` directory. Each tool follows the MCP tool specification and maps to specific TYPO3 functionality.
+Tools are defined in the `Classes/MCP/Tools` directory. Each tool follows the MCP tool specification and maps to specific TYPO3 functionality.
 
 ## Learn More
 
