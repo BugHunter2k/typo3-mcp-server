@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The pre-signed upload URL pointed outside the `/mcp` prefix.** `UploadFile`
+  without arguments advertised `/mcp_upload`, upstream's spelling. Both
+  spellings reach the same endpoint, but only `/mcp/upload` sits inside the
+  prefix that access rules are written for — a vHost that requires HTTP Basic
+  auth and exempts the MCP surface, a proxy that allow-lists it. A pre-signed
+  URL pointing outside it is answered by the webserver before PHP ever sees the
+  bearer token, so the client gets a 401 that looks like a rejected token.
+
+  Measured on louis-career/staging-ki, whose vHost requires Basic auth and
+  exempts `/mcp`: `PUT /mcp_upload` returns Apache's 401 with
+  `WWW-Authenticate: Basic`, `PUT /mcp/upload` returns 201 with the created
+  file — same token, same body. Browser flows never showed it because the
+  browser carries the Basic credentials; a machine-to-machine `curl` does not.
+
+  `/mcp_oauth/*` sits outside the prefix for the same reason and is likewise
+  answered by the webserver. That matters only for a client driving the OAuth
+  endpoints without browser credentials, so it is untouched here.
+
 ### Changed
 
 - **Breaking: the file tools go from seven to four.** `UploadFile`,
