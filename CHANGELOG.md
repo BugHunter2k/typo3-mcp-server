@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: the file tools go from seven to four.** `UploadFile`,
+  `BrowseFolder`, `SearchFile` and `PreviewFile` remain. Upstream's upload
+  implementation replaces ours, which brings hardening we did not have — SSRF
+  protection with per-hop redirect validation and `CURLOPT_RESOLVE` pinning
+  against DNS rebinding, a filename blocklist that covers server-executable,
+  browser-executable and server-reconfiguring names (`.user.ini` is in none of
+  TYPO3's own patterns), content deduplication, and `applyUserPermissionsToStorage()`
+  which enforces file mounts on the stdio path where TYPO3's own
+  `StoragePermissionsAspect` does not run.
+
+  For callers:
+
+  - `GetUploadCredentials` → `UploadFile` **without arguments** returns a
+    pre-signed upload URL. This tool is called in production (thiel, sopro).
+  - `ImportFileFromUrl` → `UploadFile` with `url`. YouTube and Vimeo links are
+    recognized and stored as online media assets.
+  - `UploadFile` with `fileData` (Base64) → `UploadFile` with `content`, for
+    text-based formats. Binary content goes through `url` or the pre-signed URL,
+    so it never travels through the model's context.
+  - `ListStorages` → `BrowseFolder` **without** `folder` lists the storages with
+    their capabilities and root paths. Not `ReadTable` on `sys_file_storage`:
+    that table's `configuration` column carries the driver credentials — on
+    kaldewei production the `key` and `secretKey` of the S3 driver.
+  - `conflictMode` is gone. Files are create-only, because they are not
+    workspace-versioned and overwriting would be immediately live and
+    irreversible. Name conflicts are renamed, identical content is returned
+    as-is.
+  - The pre-signed upload endpoint takes `PUT` with the raw body (`curl -T`) as
+    well as multipart, and the URL handed out points at `/mcp_upload`.
+    `/mcp/upload` stays served, so existing callers keep working.
+  - `PreviewFile.uid` additionally accepts an array of UIDs (max 20). With more
+    than one file the previews default to 150px per edge rather than 400px — 6 KB
+    of base64 per image instead of 56 KB, which is what makes a row of
+    candidates affordable. `width`/`height` still override.
+
+  `tx_mcpserver_upload_tokens` moves to upstream's columns and loses the
+  per-token `max_size` in favour of the global `maxFileSizeMb` setting. Tokens
+  in flight at deploy time are lost, which needs no migration step at a 15
+  minute lifetime. **The Database Analyzer has to run** for the changed columns.
+
+  `SearchFile` deliberately stays. It takes `name: "logo"` and builds the `LIKE`
+  server-side, so no SQL travels in the request body — an OWASP CRS installation
+  in front of a backend rejects `ReadTable`'s `where` with a `%word%` pattern as
+  an SQL injection attempt (rule 942100), which is how this was found.
+
+
 ### Added
 
 - The `serverInfo.version` of the initialize handshake now carries the installed
