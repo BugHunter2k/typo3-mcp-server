@@ -387,6 +387,12 @@ not wall-clock times — the session ran 13:25-15:10.
 
 ## Progress Log
 
+- [2026-09-10 09:00] Session-Übergabe. Phase 5 (Upstream-Konvergenz, Härtung,
+  Rollout) im Plan ergänzt — sie stand nicht im ursprünglichen Umfang. Extension
+  `lia-main` = `fa85824`, 812 Tests grün, alles auf origin. louis-career auf
+  master/staging-ki/production ausgerollt; die sechs anderen Projekte stehen noch
+  auf `d153dd9`, und dieser Zwischenzustand ist wegen der einen Tool-Liste des
+  Gateways nicht neutral. Nächster Schritt und Ablauf je Projekt in Phase 5.
 - [2026-07-14 16:30] Plan created
 - [2026-07-14 18:00] Ensemble review (2× Claude + 1× Codex, consensus 6/10 "has gaps")
   — all 6 findings incorporated: CRITICAL destructive partial-update replace (D2
@@ -546,6 +552,93 @@ not wall-clock times — the session ran 13:25-15:10.
   - Open: live verification on staging-ki (prerequisite: Ingo deploys
     dev-integration/merge-main-into-v14)
 
+## Phase 5: Upstream-Konvergenz, Härtung, Rollout (2026-09-08/09/10)
+
+Diese Phase ist nach dem Plan-Review entstanden und stand nicht im ursprünglichen
+Umfang. Sie ist abgeschlossen bis auf den Rollout der sechs übrigen Projekte.
+
+### Was gemacht wurde
+
+- [x] **Upstream-Merge.** `main` auf `74e8188` nachgezogen, 31 Commits, 13
+      Konfliktdateien, SDK `logiscape/mcp-sdk-php` auf v2.0.1. `lia-main..main` = 0.
+- [x] **Upload-Migration, sieben Tools auf vier.** Upstreams `FileUploadEndpoint`/
+      `FileUploadService` übernommen (SSRF-Kette, `CURLOPT_RESOLVE`-Pinning,
+      `assertFileNameIsAllowed()`, Inhalts-Dedupe). Entfernt:
+      `GetUploadCredentials`, `ImportFileFromUrl`, `ListStorages`, unser `UploadFile`.
+      Geblieben: `UploadFile` (upstream), `BrowseFolder`, `SearchFile`, `PreviewFile`.
+      Zwei eigene Diagnosen zurückgeholt (Apache-Header-Fallback, `tablesExist()`-Hinweis).
+- [x] **`lia-main` neu aufgebaut.** Aus einer gewachsenen Sammlung wurden
+      **18 PR-fähige** Branches (`pr/…`) plus **2 interne** (`lia/…`).
+      Verfahren und Abnahmetests in der Memory
+      `lia-main-is-an-integration-branch`. Alte Fassungen als
+      `archive/lia-main-pre-rebuild-19d89b1` und `archive/lia-main-units-3991a49`
+      auf origin — **nicht löschen**, `composer.lock` pinnt `dev-lia-main` per
+      Commit-Referenz und ältere Locks nennen `d153dd9`.
+- [x] **Auf louis-career/staging-ki verifiziert**, 13 Features gegen den echten Build:
+      BrowseFolder ohne `folder`, PreviewFile mit uid-Array, FlexForm-Partial-Patch
+      (`persistence` überlebt), XML-Opt-in als No-Op, pre-signed Upload (201),
+      DS-Events (8 Formulare statt 1), Anker, Feld-Constraints, CORS-Preflight,
+      Build-Identität im Gateway.
+- [x] **Drei Fixes danach:** pre-signed Upload-URL nach `/mcp/upload` (lag außerhalb
+      des Prefix, den die vHost-`.htaccess` freistellt — Apache antwortete vor PHP);
+      `parseSelectItems()` entdoppelt (`values` war eine Liste, `labels` eine Map);
+      **`ReadTable.where` typisiert** (`pr/typed-where-filters`).
+- [x] Ticket-Kommentar auf LIADEV-586 gepostet (2026-09-09 16:57, Kommentar 497701).
+
+### Nicht gemacht, mit Begründung
+
+- Die doppelten EXT:form-Definitionen sind **nicht unser Bug**: auf Production mit
+  dem alten Build identisch, TYPO3s eigenes Backend zeigt sie ebenso. Was
+  ausgeschlossen wurde, steht im CHANGELOG der Extension. Ursache offen; der Nutzer
+  erwartet, dass ein anstehendes Update sie mitnimmt.
+- Ein TYPO3-Forge-Ticket zur Schlüsselung in `getAccessibleFormStorageFolders()`
+  wurde entworfen und **verworfen**: v14 hat die Stelle wegrefaktoriert, in 13.4
+  entsteht nur eine doppelte Liste plus ein irreführendes Integritäts-Icon.
+  Wirkungshöhe rechtfertigt die Maintainer-Zeit nicht.
+
+### Offen: die sechs übrigen Projekte nachziehen
+
+**Warum dringend und nicht irgendwann:** das Gateway verteilt **eine** Tool-Liste
+vom `reference_backend` (`louis-career/production`) an alle Routen. Seit dem
+Production-Deploy bewirbt es also das neue `ReadTable.where`-Schema auch dort, wo
+das Backend noch einen SQL-String erwartet — und dort wirft `stripos()` mit einem
+Array einen `TypeError`. Jeder gefilterte `ReadTable`-Aufruf auf einem alten
+Backend scheitert (lesend, ohne Datenschaden). Details:
+Memory `gateway-serves-one-toolset-to-all-routes`.
+
+- [ ] thiel · ah-meyer · denso · hoermann · kaldewei · sopro
+
+**Ablauf je Projekt** (so bei louis-career gemacht, Checkouts unter
+`/home/hollmann/public_html/public/<projekt>`):
+
+1. `git switch master && git pull --ff-only`, Arbeitsbaum muss clean sein.
+   Fremde uncommittete Änderungen **nicht** mitcommitten — im Zweifel stoppen
+   und fragen (siehe `composer-update-writes-secrets-to-settings-php`).
+2. `composer update hn/typo3-mcp-server -w` — `-w`, weil das SDK mitzieht.
+   Danach den Lock-Diff prüfen: es dürfen nur `hn/typo3-mcp-server` und ggf.
+   `logiscape/mcp-sdk-php` auftauchen.
+3. CHANGELOG-Eintrag (Keep a Changelog, deutsch), Commit mit `LIADEV-586:` im Titel.
+4. Den MCP-Commit **schmal** auf jeden Deploy-Branch cherry-picken — **nicht**
+   master mergen, das schleppt fremde Pakete mit. Bei hoermann ohnehin Cherry-pick
+   (7 Umgebungen, kein `updateschema` in der CI).
+5. **Push und Cache-Flush macht der Nutzer.** Deploy-Branches nie selbst pushen.
+
+**Kein Schema-Update** in diesem Sprung. **Cache-Flush ist Pflicht** — dieser Stand
+bringt neue Middleware und eine neue Backend-Route; ein ausgelassener Flush hat auf
+staging-ki als `Unknown client_id` im OAuth-Flow zugeschlagen und kostete eine
+Stunde Fehlersuche.
+
+### Danach
+
+- [ ] 52 alte Branches auf origin aufräumen — erst nach einem Deployment gegen den
+      neuen Stand, Liste und Kriterien im Artefakt zur Branch-Topologie.
+- [ ] PRs an upstream einreichen. Sofort fertig: `pr/flexform-read`,
+      `pr/build-identity`, `pr/oauth-lifetimes`, `pr/site-domains`.
+      Stärkster Kandidat inzwischen `pr/typed-where-filters`.
+- [ ] Gateway: Tool-Cache **pro Build-Referenz** schlüsseln statt global. Die Zutat
+      ist da (`running` je Route in `list_routes`, `backend_versions.py`).
+      Vorgeschlagen, nicht beauftragt.
+
 ## Implementation Checklist
 
 ### Phase 1: FlexForm DS-aware read/write
@@ -578,9 +671,18 @@ not wall-clock times — the session ran 13:25-15:10.
 - [x] CType-change regression test
 - [x] Subheader/page-create/bodytext-empty regression tests
 - [x] Delete-UX description + verification
-- [ ] Live verification + German ticket comment draft
-      (draft DONE 2026-07-14, shown to Ingo — posting only on explicit OK;
-      live verification blocked on staging-ki prerequisite)
+- [x] Live verification + German ticket comment draft
+      (LIVE VERIFIED 2026-07-14 via gateway on louis-career/staging-ki after
+      Ingo's pipeline deployment:
+      K26 — Jessica's exact write {"persistence":{"storagePid":"109,142,143,144"}}
+      on tt_content:2031 accepted, reads back nested; partial patch preserved
+      the pre-existing legacy field (old code would have erased it). Note:
+      2031 carries mangled legacy junk `settingscontacts` from the old bug —
+      harmless, visible as-is.
+      K24 — GetPage page 9 lists "Anchor: #c1454"/"#c285" per element.
+      K20 — covered by regression suite; FAQ-answers finding is prompt
+      behavior, mechanism (atomic inline children) upstream-fixed.
+      Comment draft ready — posting only on explicit OK)
 - [x] **REVIEW GATE:** human approval, merged --no-ff
       (commit dbb38b2, merge 228f73b; integration + all 4 feature branches
       pushed to origin by Ingo 2026-07-14 — d41b642..228f73b)
